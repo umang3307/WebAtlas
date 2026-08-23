@@ -65,3 +65,27 @@ def get_or_create_collector(url: str, status_cb=None) -> str:
         status_cb(f"Scraper created for {domain}: {collector_id}")
 
     return collector_id
+
+def heal_collector(collector_id: str, problem: str, status_cb=None) -> bool:
+    """Runs `bdata scraper heal` then `bdata scraper approve` on an
+    under-performing collector. Returns True if both steps succeeded."""
+    if status_cb:
+        status_cb(f"Healing collector {collector_id}...")
+
+    heal_cmd = f'npx -p @brightdata/cli bdata scraper heal {collector_id} "{problem}"'
+    heal_result = subprocess.run(heal_cmd, shell=True, capture_output=True, text=True,
+                                  timeout=600, encoding="utf-8", errors="replace")
+    heal_output = (heal_result.stdout or "") + (heal_result.stderr or "")
+    if "healed" not in heal_output.lower():
+        if status_cb:
+            status_cb(f"Heal step did not confirm success for {collector_id}")
+        return False
+
+    if status_cb:
+        status_cb(f"Approving heal for {collector_id}...")
+
+    approve_cmd = f"npx -p @brightdata/cli bdata scraper approve {collector_id}"
+    approve_result = subprocess.run(approve_cmd, shell=True, capture_output=True, text=True,
+                                     timeout=300, encoding="utf-8", errors="replace")
+    approve_output = (approve_result.stdout or "") + (approve_result.stderr or "")
+    return approve_result.returncode == 0 and "healed" in approve_output.lower()

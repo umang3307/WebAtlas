@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from db import database
 from scraper.brightdata_client import run_collector
-from scraper.collector_manager import get_or_create_collector
+from scraper.collector_manager import get_or_create_collector, heal_collector
 from scraper.generic_extractor import infer_file_type
 from scraper.crawler import crawl_site, discover_sections, MAX_PAGES_DEFAULT
 
@@ -32,6 +32,16 @@ def _set(job_id, status, message, **extra):
 
 DISCOVERY_JOBS = {}
 
+GENERIC_HEAL_PROMPT = (
+    "This page returned no usable internal links or documents on the last run. "
+    "The extraction schema may not match this site's structure (for example, it "
+    "may have mistaken this page for an e-commerce product page instead of a "
+    "normal site). Return two arrays instead: 'internal_links' should list every "
+    "full URL to another page on this same website found in the navigation, "
+    "header, or footer. 'documents' should list every downloadable file (PDF, "
+    "DOC, DOCX, XLS, XLSX, PPT, CSV) linked anywhere on the page, each with "
+    "title, document_url, and date if shown."
+)
 
 def _run_discovery_job(job_id, root_url):
     try:
@@ -93,11 +103,27 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
         )
 
         if not docs:
-            database.log_scrape(scan_id, "failed", collector_id, "", f"crawled {pages_crawled} pages, no documents found")
-            _set(job_id, "error", f"Crawled {pages_crawled} pages but found no documents.", scan_id=scan_id)
-            return
+            _set(job_id, "healing", f"No documents found after {pages_crawled} pages — attempting to heal the collector...", scan_id=scan_id)
+            healed = heal_collector(
+                collector_id, GENERIC_HEAL_PROMPT,
+                status_cb=lambda msg: _set(job_id, "healing", msg, scan_id=scan_id)
+            )
 
-        _set(job_id, "building", f"Building the knowledge graph from {pages_crawled} pages...", scan_id=scan_id)
+            if healed:
+                _set(job_id, "scraping", "Heal applied — retrying the crawl...", scan_id=scan_id)
+                docs, pages_crawled, visited_urls = crawl_site(
+                    seeds, domain, collector_id, run_collector,
+                    max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
+                )
+
+            if not docs:
+                database.log_scrape(scan_id, "failed", collector_id, "",
+                                    f"crawled {pages_crawled} pages, no documents found (heal attempted: {healed})")
+                _set(job_id, "error", f"Crawled {pages_crawled} pages but found no documents, even after a heal attempt.", scan_id=scan_id)
+                return
+            else:
+                database.log_scrape(scan_id, "healed", collector_id, "",
+                                    f"auto-heal fixed a broken extraction — found {len(docs)} documents after retry")
 
         page_nodes = {}
         seen_doc_urls = set()
