@@ -1,60 +1,96 @@
 # WebAtlas 🕸️
 
-A self-healing scraper that turns any organization's public document
-surface into an explorable knowledge graph — fully automated through
-a web UI: paste a URL, watch it scrape, get a graph.
+**A self-healing scraper that turns any organization's public document surface into an explorable knowledge graph.**
 
-Built for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-verse).
+Built for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-verse) — Bright Data Scraper Studio Hackathon, August 2026.
 
-## How it works
-1. Paste a root URL (e.g. `https://galgotiacollege.edu`)
-2. Click **Discover sections** — WebAtlas creates (or reuses) a Bright Data
-   Scraper Studio collector for the domain, runs it once against the homepage,
-   and returns every internal page it linked to (notices, tenders, fee
-   structures, etc.) — including any documents sitting right on the homepage
-3. Pick which sections to actually crawl (or select all)
-4. Click **Scan selected** — WebAtlas crawls exactly those sections (up to
-   a page cap, default 25 pages) using the *same* collector for every page
-5. A generic recursive extractor (`scraper/generic_extractor.py`) pulls
-   documents *and* internal links out of whatever JSON shape the collector
-   returns — no hardcoded field names, so one collector generalizes across
-   differently-structured pages on the same site
-6. Everything lands in a Domain → Page → Document knowledge graph (SQLite,
-   full provenance) and renders live in the browser, documents clustered by year
+---
 
-No content parsing/OCR — this maps *what exists and how it's linked*, not
-what's inside each document.
+## 🌻 Team Details
+
+- **Team Name:** Sunflowers
+- **Team Members:**
+  1. Umang Agarwal
+  2. Aashvi Pandey
+
+---
+
+## What it does
+
+Paste a URL — a college, school, or company's website — and WebAtlas automatically:
+
+1. **Discovers** every internal page linked from that site using a Bright Data Scraper Studio collector
+2. Lets you **select** which sections to crawl (or scan everything)
+3. **Crawls** those sections, pulling out every downloadable document (PDFs, DOCs, XLS, etc.) it finds
+4. **Builds a live knowledge graph** — Domain → Page → Document — with full provenance for every node
+5. Renders it as an **interactive, explorable graph** with year-based clustering, search, and a directory-tree view
+
+No content parsing or OCR — WebAtlas maps *what exists and how it's linked*, not what's inside each document. That keeps it fast and generalizable across any site's structure.
+
+## Why it's different from just asking an LLM
+
+- **Persistent, structured state** — every scan is stored in a graph database with provenance, not a one-off chat answer
+- **Systematic discovery** — deterministically crawls every selected section, not "a few pages an agent thought to check"
+- **Self-healing extraction** — when a scan comes back with no usable data, WebAtlas automatically triggers `bdata scraper heal` and `bdata scraper approve` on the collector and retries, without any manual intervention
+- **A live, triggerable endpoint** — the Collector ID is wired directly into the app via Bright Data's `POST /dca/trigger` API, so any new domain becomes scannable on demand, no redeployment needed
+
+## Self-healing, built into the product
+
+Self-healing isn't just a terminal demo here — it's a real code path (`app.py` → `heal_collector()`):
+
+- If a scan finds zero documents, the app automatically runs a heal prompt against the collector, re-approves it, and retries the crawl — all without a human in the loop
+- If Bright Data reports a collector no longer exists (404), the app invalidates the cache and rebuilds it automatically
+- Every scrape attempt — success, healed, or failed — is logged with a timestamp and shown live in the app's **Scrape Log** panel at the bottom of the UI
+
+This means the resilience story isn't something we performed once for a recording — it's a standing feature of the pipeline.
+
+## Architecture
+
+```
+URL input
+│
+▼
+Discover sections  ──── Scraper Studio collector reads the homepage,
+│                  returns every internal link + doc found there
+▼
+Section selection (user picks what to crawl)
+│
+▼
+Crawler  ──────────── same collector, run per selected page via
+│                 POST /dca/trigger → GET /dca/dataset
+▼
+Generic extractor  ─── recursively parses ANY JSON shape the collector
+│                  returns (no hardcoded field names) into
+│                  {document_url, title, date, page_url} records
+▼
+Knowledge graph (SQLite)  ── Domain/Page/Document nodes, LINKS_TO/
+│                        HOSTED_ON edges, full scrape_log provenance
+▼
+Interactive graph UI  ── year-clustered, searchable, directory-tree view,
+                         live Scrape Log panel
+```
+
+## Tech stack
+
+Python, Flask, SQLite, vanilla JS + vis-network for the graph UI, Bright Data Scraper Studio (via the `bdata` CLI and REST API).
 
 ## Running it
-```
+
+```bash
 pip install -r requirements.txt
 npx -p @brightdata/cli bdata login
 cp .env.example .env   # paste your Bright Data API token
 python app.py
 ```
-Open http://localhost:5000, paste a URL, click Scan.
 
-## Self-healing
-Bright Data's `bdata scraper heal <collector_id> "<what's wrong>"` was used
-to refine the collector after an initial under-specified pass. See the
-live "Self-heal log" panel in the app (bottom bar) for the recorded events.
+Open `http://localhost:5000`, paste a URL, click **Discover sections**, pick what to scan, click **Scan selected**.
 
 ## AI-use disclosure
-Built with AI coding assistance (Claude) for initial scaffolding of the
-Flask backend, SQLite schema, Bright Data API client, and the generic
-JSON extractor pattern. From there, we tested it against real target sites,
-debugged issues that only showed up under real crawls (including a crash
-in the scan pipeline and a mismatch between the crawl depth the code
-actually used vs. what we'd first documented), tuned the Scraper Studio
-collector prompt through the self-heal workflow above, and wired up the
-frontend polling/rendering UI. We can walk through and explain every part
-of this codebase.
 
-## Scope / roadmap
-- No document content extraction (OCR/parsing) — deliberately out of scope
-  to keep the tool fast and domain-agnostic; the graph is a map, not an analysis.
-- Government sites are excluded per hackathon rules.
+This project was built with the assistance of an AI coding assistant (Claude) for scaffolding the backend architecture, database schema, extraction logic, and frontend. All core design decisions — including the self-healing flow, the graph model, and the crawl strategy — were made and understood by the team, who can explain each part of the codebase and the reasoning behind it.
 
-## Team — Sunflowers
-- Umang Agarwal
-- Aashvi Pandey
+## Scope & roadmap
+
+- Document *content* parsing (OCR, structured field extraction) is deliberately out of scope for v1 — the graph is a map of what exists, not an analysis of what's inside each file
+- Crawl depth and page count are capped for reliability and demo speed; both are configurable
+- Future direction: content-level extraction, cross-document entity linking, scheduled re-scans with diffing to surface what changed over time
