@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+db/webatlas.db
+collectors_cache.json
+.DS_Store
