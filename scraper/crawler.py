@@ -11,6 +11,7 @@ from collections import deque
 from urllib.parse import urlparse
 
 from scraper.generic_extractor import extract_documents, extract_links
+from scraper.brightdata_client import CollectorNotFoundError
 
 MAX_PAGES_DEFAULT = 25
 MAX_DEPTH_DEFAULT = 2
@@ -43,10 +44,15 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
 
         try:
             records, _snapshot_id = run_collector_fn(collector_id, url)
+        except CollectorNotFoundError:
+            # The collector itself is dead -- every remaining page will fail
+            # the same way, so stop here and let the caller rebuild it
+            # instead of burning through the whole crawl one 404 at a time.
+            raise
         except Exception as e:
             if status_cb:
-                status_cb(pages_crawled, max_pages, f"{url} (failed: {e})")
-        continue
+                status_cb(pages_crawled, max_pages, f"{url} — FAILED: {e}")
+            continue
 
         pages_crawled += 1
         if not records:
@@ -66,16 +72,18 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
 
 
 def discover_sections(root_url, collector_id, run_collector_fn):
-    """
-    Fast, single-page call: runs the collector once against the root URL
-    and returns the same-site links found on it, so the user can pick
-    which sections to actually crawl (instead of guessing blindly).
-    """
     root_netloc = urlparse(root_url).netloc
-    records, _snapshot_id = run_collector_fn(collector_id, root_url)
+    root_norm = root_url.rstrip("/")
+    try:
+        records, _snapshot_id = run_collector_fn(collector_id, root_url)
+    except CollectorNotFoundError:
+        raise  # preserve type so callers can trigger a rebuild
+    except Exception as e:
+        raise RuntimeError(f"discover_sections failed calling collector: {e}")
     if not records:
-        return []
+        return [], 0
     links = extract_links(records, root_netloc)
-    # also count any documents sitting right on the homepage itself
+    links.discard(root_url)
+    links = {l for l in links if l.rstrip("/") != root_norm}
     homepage_docs = extract_documents(records, page_url_hint=root_url)
     return sorted(links), len(homepage_docs)

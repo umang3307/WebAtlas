@@ -17,8 +17,8 @@ import uuid
 from urllib.parse import urlparse
 
 from db import database
-from scraper.brightdata_client import run_collector
-from scraper.collector_manager import get_or_create_collector, heal_collector
+from scraper.brightdata_client import run_collector, CollectorNotFoundError
+from scraper.collector_manager import get_or_create_collector, heal_collector, invalidate_collector
 from scraper.generic_extractor import infer_file_type
 from scraper.crawler import crawl_site, discover_sections, MAX_PAGES_DEFAULT
 
@@ -51,7 +51,37 @@ def _run_discovery_job(job_id, root_url):
             status_cb=lambda msg: DISCOVERY_JOBS.__setitem__(job_id, {"status": "creating_scraper", "message": msg})
         )
         DISCOVERY_JOBS[job_id] = {"status": "discovering", "message": "Scanning homepage for sections..."}
-        sections, homepage_doc_count = discover_sections(root_url, collector_id, run_collector)
+        try:
+            sections, homepage_doc_count = discover_sections(root_url, collector_id, run_collector)
+        except CollectorNotFoundError:
+            DISCOVERY_JOBS[job_id] = {
+                "status": "creating_scraper",
+                "message": "Cached scraper no longer exists on Bright Data — rebuilding it..."
+            }
+            invalidate_collector(root_url)
+            collector_id = get_or_create_collector(
+                root_url,
+                status_cb=lambda msg: DISCOVERY_JOBS.__setitem__(job_id, {"status": "creating_scraper", "message": msg})
+            )
+            DISCOVERY_JOBS[job_id] = {"status": "discovering", "message": "Scanning homepage for sections..."}
+            sections, homepage_doc_count = discover_sections(root_url, collector_id, run_collector)
+
+        # The collector responded, but a fresh AI-generated scraper sometimes
+        # misreads an ordinary homepage as an e-commerce product page and
+        # returns no real navigation links -- self-heal instead of reporting
+        # a false "this site has 1 section" result.
+        if not sections and homepage_doc_count == 0:
+            DISCOVERY_JOBS[job_id] = {
+                "status": "healing",
+                "message": "No sections found — the scraper may have misread this page. Healing it..."
+            }
+            healed = heal_collector(
+                collector_id, GENERIC_HEAL_PROMPT,
+                status_cb=lambda msg: DISCOVERY_JOBS.__setitem__(job_id, {"status": "healing", "message": msg})
+            )
+            if healed:
+                DISCOVERY_JOBS[job_id] = {"status": "discovering", "message": "Heal applied — rescanning homepage..."}
+                sections, homepage_doc_count = discover_sections(root_url, collector_id, run_collector)
         DISCOVERY_JOBS[job_id] = {
             "status": "done", "sections": sections,
             "homepage_doc_count": homepage_doc_count, "collector_id": collector_id
@@ -97,10 +127,32 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
                  f"Crawling page {pages_done + 1}/{mp}: {current_url}",
                  scan_id=scan_id)
 
-        docs, pages_crawled, visited_urls = crawl_site(
-            seeds, domain, collector_id, run_collector,
-            max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
-        )
+        try:
+            docs, pages_crawled, visited_urls = crawl_site(
+                seeds, domain, collector_id, run_collector,
+                max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
+            )
+        except CollectorNotFoundError:
+            _set(job_id, "creating_scraper",
+                 "Cached scraper no longer exists on Bright Data — rebuilding it...", scan_id=scan_id)
+            invalidate_collector(root_url)
+            collector_id = get_or_create_collector(
+                root_url,
+                status_cb=lambda msg: _set(job_id, "creating_scraper", msg, scan_id=scan_id)
+            )
+            docs, pages_crawled, visited_urls = crawl_site(
+                seeds, domain, collector_id, run_collector,
+                max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
+            )
+
+        if not docs and pages_crawled == 0:
+            database.log_scrape(scan_id, "failed", collector_id, "",
+                                 "crawl did not run — 0 pages reached, likely a network/API/rate-limit issue")
+            _set(job_id, "error",
+                 "Couldn't reach the collector at all (0 pages crawled). This looks like a "
+                 "connectivity or rate-limit issue, not a bad collector — check your Bright Data "
+                 "dashboard and network before retrying.", scan_id=scan_id)
+            return
 
         if not docs:
             _set(job_id, "healing", f"No documents found after {pages_crawled} pages — attempting to heal the collector...", scan_id=scan_id)
@@ -118,12 +170,14 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
 
             if not docs:
                 database.log_scrape(scan_id, "failed", collector_id, "",
-                                    f"crawled {pages_crawled} pages, no documents found (heal attempted: {healed})")
+                                     f"crawled {pages_crawled} pages, no documents found (heal attempted: {healed})")
                 _set(job_id, "error", f"Crawled {pages_crawled} pages but found no documents, even after a heal attempt.", scan_id=scan_id)
                 return
             else:
                 database.log_scrape(scan_id, "healed", collector_id, "",
-                                    f"auto-heal fixed a broken extraction — found {len(docs)} documents after retry")
+                                     f"auto-heal fixed a broken extraction — found {len(docs)} documents after retry")
+
+        _set(job_id, "building", f"Building the knowledge graph from {pages_crawled} pages...", scan_id=scan_id)
 
         page_nodes = {}
         seen_doc_urls = set()
@@ -162,7 +216,6 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
 
     except Exception as e:
         _set(job_id, "error", str(e))
-
 
 @app.route("/")
 def index():
