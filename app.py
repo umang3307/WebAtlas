@@ -128,7 +128,7 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
                  scan_id=scan_id)
 
         try:
-            docs, pages_crawled, visited_urls = crawl_site(
+            docs, pages_crawled, visited_urls, failed_urls = crawl_site(
                 seeds, domain, collector_id, run_collector,
                 max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
             )
@@ -140,14 +140,16 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
                 root_url,
                 status_cb=lambda msg: _set(job_id, "creating_scraper", msg, scan_id=scan_id)
             )
-            docs, pages_crawled, visited_urls = crawl_site(
+            docs, pages_crawled, visited_urls, failed_urls = crawl_site(
                 seeds, domain, collector_id, run_collector,
                 max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
             )
 
         if not docs and pages_crawled == 0:
             database.log_scrape(scan_id, "failed", collector_id, "",
-                                 "crawl did not run — 0 pages reached, likely a network/API/rate-limit issue")
+                                 "crawl did not run — 0 pages reached, likely a network/API/rate-limit issue. "
+                                 f"Selected {len(seeds)} section(s), all failed: "
+                                 + "; ".join(f"{f['url']} ({f['error']})" for f in failed_urls[:10]))
             _set(job_id, "error",
                  "Couldn't reach the collector at all (0 pages crawled). This looks like a "
                  "connectivity or rate-limit issue, not a bad collector — check your Bright Data "
@@ -163,19 +165,25 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
 
             if healed:
                 _set(job_id, "scraping", "Heal applied — retrying the crawl...", scan_id=scan_id)
-                docs, pages_crawled, visited_urls = crawl_site(
+                docs, pages_crawled, visited_urls, failed_urls = crawl_site(
                     seeds, domain, collector_id, run_collector,
                     max_pages=max_pages or MAX_PAGES_DEFAULT, max_depth=0, status_cb=_crawl_status
                 )
 
             if not docs:
                 database.log_scrape(scan_id, "failed", collector_id, "",
-                                     f"crawled {pages_crawled} pages, no documents found (heal attempted: {healed})")
+                                     f"crawled {pages_crawled} pages, no documents found (heal attempted: {healed}). "
+                                     + (f"Failed pages: " + "; ".join(f"{f['url']} ({f['error']})" for f in failed_urls[:10]) if failed_urls else ""))
                 _set(job_id, "error", f"Crawled {pages_crawled} pages but found no documents, even after a heal attempt.", scan_id=scan_id)
                 return
             else:
                 database.log_scrape(scan_id, "healed", collector_id, "",
                                      f"auto-heal fixed a broken extraction — found {len(docs)} documents after retry")
+
+        if failed_urls:
+            database.log_scrape(scan_id, "partial", collector_id, "",
+                                 f"{len(failed_urls)} of {len(seeds)} selected page(s) could not be crawled: "
+                                 + "; ".join(f"{f['url']} ({f['error']})" for f in failed_urls[:10]))
 
         _set(job_id, "building", f"Building the knowledge graph from {pages_crawled} pages...", scan_id=scan_id)
 
@@ -211,8 +219,11 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
                              f"crawled {pages_crawled} pages, found {doc_count} documents across {len(page_nodes)} document-hosting pages")
         database.finish_scan(scan_id)
 
-        _set(job_id, "done",
-             f"Crawled {pages_crawled} pages, found {doc_count} documents.", scan_id=scan_id)
+        done_msg = f"Crawled {pages_crawled} pages, found {doc_count} documents."
+        if failed_urls:
+            done_msg += (f" {len(failed_urls)} of {len(seeds)} selected page(s) failed to crawl "
+                         f"(see self-heal log below) — try 'Scan selected' again to retry just those.")
+        _set(job_id, "done", done_msg, scan_id=scan_id)
 
     except Exception as e:
         _set(job_id, "error", str(e))

@@ -24,13 +24,18 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
     like /notices, /tenders). All seeds start at depth 0; the crawl follows
     same-site links up to max_depth beyond each seed.
 
-    Returns (all_docs, pages_crawled, pages_visited_urls).
+    Returns (all_docs, pages_crawled, pages_visited_urls, failed_urls).
     all_docs: list of {"document_url","title","date","page_url"}
+    failed_urls: list of {"url", "error"} for pages the collector could not
+    fetch -- surfaced to the caller instead of being silently dropped, so a
+    partial crawl (e.g. some selected sections failing) is visible rather
+    than looking like those sections were simply never selected.
     """
     visited = set()
     frontier = deque((url, 0) for url in seed_urls)
     all_docs = []
     pages_crawled = 0
+    failed_urls = []
 
     while frontier and pages_crawled < max_pages:
         url, depth = frontier.popleft()
@@ -50,12 +55,14 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
             # instead of burning through the whole crawl one 404 at a time.
             raise
         except Exception as e:
+            failed_urls.append({"url": url, "error": str(e)})
             if status_cb:
                 status_cb(pages_crawled, max_pages, f"{url} — FAILED: {e}")
             continue
 
         pages_crawled += 1
         if not records:
+            failed_urls.append({"url": url, "error": "collector returned no records"})
             continue
 
         docs = extract_documents(records, page_url_hint=url)
@@ -68,7 +75,7 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
                 if link_norm not in visited:
                     frontier.append((link, depth + 1))
 
-    return all_docs, pages_crawled, visited
+    return all_docs, pages_crawled, visited, failed_urls
 
 
 def discover_sections(root_url, collector_id, run_collector_fn):

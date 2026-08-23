@@ -1,98 +1,567 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="utf-8">
   <title>WebAtlas</title>
   <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
   <style>
     :root {
-      --bg:#0a0e14; --panel:#12161f; --border:#232937; --text:#e8ecf3; --muted:#7a8296;
-      --blue:#4f8cff; --green:#34d399; --orange:#fb923c; --accent:#8b7cf6; --red:#fb7185;
+      --bg: #0a0e14;
+      --panel: #12161f;
+      --border: #232937;
+      --text: #e8ecf3;
+      --muted: #7a8296;
+      --blue: #4f8cff;
+      --green: #34d399;
+      --orange: #fb923c;
+      --accent: #8b7cf6;
+      --red: #fb7185;
     }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family:'Inter',-apple-system,sans-serif; background:var(--bg); color:var(--text); overflow:hidden; }
 
-    #header { padding:20px 28px 16px; border-bottom:1px solid var(--border); background:linear-gradient(180deg,#0d1119,#0a0e14); }
-    #header h1 { margin:0; font-size:20px; font-weight:800; letter-spacing:-0.02em; display:flex; align-items:center; gap:10px; }
-    #header h1 .tag { font-size:11px; font-weight:600; color:var(--accent); background:rgba(139,124,246,.12); border:1px solid rgba(139,124,246,.3); padding:3px 9px; border-radius:20px; }
-    #header p { margin:6px 0 0; color:var(--muted); font-size:13px; }
-    #statsRow { display:none; gap:28px; margin-top:14px; }
-    .stat .num { font-size:22px; font-weight:700; font-family:'JetBrains Mono',monospace; }
-    .stat .lbl { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-top:2px; }
+    * {
+      box-sizing: border-box;
+    }
 
-    #scanBar { padding:16px 28px; background:var(--panel); border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center; }
-    #urlInput { flex:1; max-width:520px; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:8px; font-family:'Inter',sans-serif; font-size:13px; outline:none; }
-    #urlInput:focus { border-color:var(--blue); }
-    #scanBtn { background:var(--blue); color:#fff; border:none; padding:10px 22px; border-radius:8px; font-weight:600; cursor:pointer; font-family:'Inter',sans-serif; font-size:13px; }
-    #scanBtn:disabled { opacity:.5; cursor:not-allowed; }
-    #scanStatus { color:var(--muted); font-size:12px; font-family:'JetBrains Mono',monospace; }
-    #searchBox { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px 12px; border-radius:8px; font-size:13px; width:200px; outline:none; margin-left:auto; }
-    #searchBox:focus { border-color:var(--blue); }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
 
-    #progressWrap { display:none; padding:0 28px; background:var(--panel); }
-    #progressBarOuter { height:4px; background:#1a1f2b; border-radius:4px; overflow:hidden; margin-bottom:14px; }
-    #progressBarFill { height:100%; width:8%; background:linear-gradient(90deg,var(--blue),var(--accent)); transition:width .5s ease; }
-    #progressBarFill.indeterminate { width:35%; animation:slide 1.4s ease-in-out infinite; }
-    @keyframes slide { 0%{margin-left:-35%;} 50%{margin-left:65%;} 100%{margin-left:-35%;} }
-    #stageRow { display:flex; gap:8px; padding-bottom:14px; font-size:11px; color:var(--muted); }
-    .stage { padding:4px 10px; border-radius:20px; border:1px solid var(--border); }
-    .stage.active { color:#fff; border-color:var(--blue); background:rgba(79,140,255,.12); }
-    .stage.complete { color:var(--green); border-color:var(--green); background:rgba(52,211,153,.08); }
-    .stage.errored { color:var(--red); border-color:var(--red); background:rgba(251,113,133,.08); }
+    #header {
+      padding: 20px 28px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #0d1119, #0a0e14);
+    }
 
-    .legend { display:flex; gap:18px; font-size:12px; color:var(--muted); }
-    .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
-    #controls { padding:10px 28px; border-bottom:1px solid var(--border); display:flex; gap:18px; align-items:center; background:var(--panel); }
+    #header h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
 
-    #network { width:100%; height:calc(100vh - 260px); background:radial-gradient(ellipse at center,#0d1119,#0a0e14); }
-    #emptyState { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--muted); text-align:center; }
-    #emptyState .icon { font-size:48px; margin-bottom:16px; opacity:.4; }
+    #header h1 .tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: rgba(139, 124, 246, .12);
+      border: 1px solid rgba(139, 124, 246, .3);
+      padding: 3px 9px;
+      border-radius: 20px;
+    }
 
-    #zoomControls { position:fixed; right:20px; bottom:20px; display:flex; flex-direction:column; gap:6px; z-index:50; }
-#zoomControls button { width:36px; height:36px; border-radius:8px; background:var(--panel); border:1px solid var(--border); color:var(--text); font-size:18px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; }
-#zoomControls button:hover { border-color:var(--blue); color:var(--blue); }
-#resetViewBtn { width:36px; height:36px; border-radius:8px; background:var(--panel); border:1px solid var(--border); color:var(--muted); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; margin-top:4px; }
-#resetViewBtn:hover { border-color:var(--blue); color:var(--blue); }
+    #header p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
 
-#treePanel { position:fixed; left:0; top:260px; width:260px; height:calc(100vh - 260px); background:var(--panel); border-right:1px solid var(--border); padding:16px; overflow-y:auto; font-size:12px; display:none; }
-#treePanel summary { cursor:pointer; padding:5px 0; color:var(--text); }
-#treePanel summary:hover { color:var(--blue); }
-#treePanel .doc-item { padding:4px 0 4px 18px; color:var(--muted); cursor:pointer; }
-#treePanel .doc-item:hover { color:var(--orange); }
-#treePanel details details { margin-left:12px; border-left:1px solid var(--border); padding-left:8px; }
+    #statsRow {
+      display: none;
+      gap: 28px;
+      margin-top: 14px;
+    }
 
-    #detail { position:fixed; right:0; top:260px; width:340px; height:calc(100vh - 260px); background:var(--panel); border-left:1px solid var(--border); padding:20px; overflow-y:auto; display:none; font-size:13px; box-shadow:-8px 0 24px rgba(0,0,0,.3); }
-    #detail h3 { margin-top:0; font-size:15px; font-weight:700; word-break:break-word; }
-    #detail .field { margin-bottom:12px; }
-    #detail .label { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px; }
-    #detail .value { font-family:'JetBrains Mono',monospace; font-size:12px; word-break:break-all; }
-    #detail a { color:var(--blue); text-decoration:none; }
-    #detail .close { float:right; cursor:pointer; color:var(--muted); font-size:18px; }
+    .stat .num {
+      font-size: 22px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
 
-    #healPanel { position:fixed; left:0; bottom:0; width:100%; background:var(--panel); border-top:1px solid var(--border); padding:10px 28px; font-size:12px; display:none; gap:24px; align-items:center; overflow-x:auto; white-space:nowrap; }
-    .heal-title { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:10px; letter-spacing:.06em; flex-shrink:0; }
-    .heal-entry { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-    .heal-status { padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; text-transform:uppercase; }
-    .heal-status.success { background:rgba(52,211,153,.15); color:var(--green); }
-    .heal-status.healed { background:rgba(139,124,246,.15); color:var(--accent); }
-    .heal-status.failed { background:rgba(251,113,133,.15); color:var(--red); }
-    .heal-note { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; }
-    #sectionsList label { display:flex; align-items:center; gap:6px; background:var(--bg); border:1px solid var(--border); padding:6px 12px; border-radius:8px; font-size:12px; cursor:pointer; }
-    #sectionsList label:hover { border-color:var(--blue); }
-    #sectionsList input { accent-color: var(--blue); }
+    .stat .lbl {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-top: 2px;
+    }
+
+    #scanBar {
+      padding: 16px 28px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #urlInput {
+      flex: 1;
+      max-width: 520px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      outline: none;
+    }
+
+    #urlInput:focus {
+      border-color: var(--blue);
+    }
+
+    #scanBtn {
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+    }
+
+    #scanBtn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    #discoverBtn {
+      background: linear-gradient(135deg, rgba(139, 124, 246, 0.15), rgba(79, 140, 255, 0.15));
+      color: var(--text);
+      border: 1px solid rgba(139, 124, 246, 0.4);
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #discoverBtn:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: linear-gradient(135deg, rgba(139, 124, 246, 0.25), rgba(79, 140, 255, 0.25));
+      transform: translateY(-1px);
+    }
+
+    #discoverBtn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    #scanStatus {
+      color: var(--muted);
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    #searchBox {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      width: 200px;
+      outline: none;
+      margin-left: auto;
+    }
+
+    #searchBox:focus {
+      border-color: var(--blue);
+    }
+
+    #progressWrap {
+      display: none;
+      padding: 0 28px;
+      background: var(--panel);
+    }
+
+    #progressBarOuter {
+      height: 4px;
+      background: #1a1f2b;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+
+    #progressBarFill {
+      height: 100%;
+      width: 8%;
+      background: linear-gradient(90deg, var(--blue), var(--accent));
+      transition: width .5s ease;
+    }
+
+    #progressBarFill.indeterminate {
+      width: 35%;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+
+    @keyframes slide {
+      0% {
+        margin-left: -35%;
+      }
+
+      50% {
+        margin-left: 65%;
+      }
+
+      100% {
+        margin-left: -35%;
+      }
+    }
+
+    #stageRow {
+      display: flex;
+      gap: 8px;
+      padding-bottom: 14px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .stage {
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+    }
+
+    .stage.active {
+      color: #fff;
+      border-color: var(--blue);
+      background: rgba(79, 140, 255, .12);
+    }
+
+    .stage.complete {
+      color: var(--green);
+      border-color: var(--green);
+      background: rgba(52, 211, 153, .08);
+    }
+
+    .stage.errored {
+      color: var(--red);
+      border-color: var(--red);
+      background: rgba(251, 113, 133, .08);
+    }
+
+    .legend {
+      display: flex;
+      gap: 18px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+
+    #controls {
+      padding: 10px 28px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      background: var(--panel);
+    }
+
+    #network {
+      width: 100%;
+      height: calc(100vh - 260px);
+      background: radial-gradient(ellipse at center, #0d1119, #0a0e14);
+    }
+
+    #emptyState {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    #emptyState .icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: .4;
+    }
+
+    #zoomControls {
+      position: fixed;
+      right: 20px;
+      bottom: 60px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 50;
+    }
+
+    #zoomControls button {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #zoomControls button:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    #resetViewBtn {
+      position: fixed;
+      right: 20px;
+      bottom: 16px;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 15px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+
+    #resetViewBtn:hover {
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+
+    #zoomHint {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 16px;
+      font-size: 11px;
+      color: var(--muted);
+      background: rgba(18, 22, 31, 0.9);
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      z-index: 40;
+      white-space: nowrap;
+    }
+
+    #treePanel {
+      position: fixed;
+      left: 0;
+      top: 260px;
+      width: 260px;
+      height: calc(100vh - 260px);
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: auto;
+      font-size: 12px;
+      display: none;
+    }
+
+    #treePanel summary {
+      cursor: pointer;
+      padding: 5px 0;
+      color: var(--text);
+    }
+
+    #treePanel summary:hover {
+      color: var(--blue);
+    }
+
+    #treePanel .doc-item {
+      padding: 4px 0 4px 18px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    #treePanel .doc-item:hover {
+      color: var(--orange);
+    }
+
+    #treePanel details details {
+      margin-left: 12px;
+      border-left: 1px solid var(--border);
+      padding-left: 8px;
+    }
+
+    #detail {
+      position: fixed;
+      right: 0;
+      top: 260px;
+      width: 340px;
+      height: calc(100vh - 260px);
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      padding: 20px;
+      overflow-y: auto;
+      display: none;
+      font-size: 13px;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, .3);
+    }
+
+    #detail h3 {
+      margin-top: 0;
+      font-size: 15px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    #detail .field {
+      margin-bottom: 12px;
+    }
+
+    #detail .label {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 3px;
+    }
+
+    #detail .value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    #detail a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    #detail .close {
+      float: right;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    #healPanel {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      width: 100%;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 10px 28px;
+      font-size: 12px;
+      display: none;
+      gap: 24px;
+      align-items: center;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .heal-title {
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: .06em;
+      flex-shrink: 0;
+    }
+
+    .heal-entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .heal-status {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .heal-status.success {
+      background: rgba(52, 211, 153, .15);
+      color: var(--green);
+    }
+
+    .heal-status.healed {
+      background: rgba(139, 124, 246, .15);
+      color: var(--accent);
+    }
+
+    .heal-status.failed {
+      background: rgba(251, 113, 133, .15);
+      color: var(--red);
+    }
+
+    .heal-note {
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+    }
+
+    #sectionsList label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #sectionsList label:hover {
+      border-color: var(--blue);
+    }
+
+    #sectionsList input {
+      accent-color: var(--blue);
+    }
   </style>
 </head>
+
 <body>
   <div id="header">
-    <h1>🕸️ WebAtlas <span class="tag">SELF-HEALING SCRAPER</span></h1>
-    <p>Paste any site's public documents/notices page. WebAtlas builds a live, explorable knowledge graph of everything it finds.</p>
+    <h1>🕸️ WebAtlas</h1>
+    <p>Paste any site's public documents/notices page. WebAtlas builds a live, explorable knowledge graph of everything
+      it finds.</p>
     <div id="statsRow">
-      <div class="stat"><div class="num" id="statDomain">—</div><div class="lbl">Domain</div></div>
-      <div class="stat"><div class="num" id="statDocs">0</div><div class="lbl">Documents</div></div>
-      <div class="stat"><div class="num" id="statPages">0</div><div class="lbl">Pages</div></div>
-      <div class="stat"><div class="num" id="statYears">0</div><div class="lbl">Years spanned</div></div>
+      <div class="stat">
+        <div class="num" id="statDomain">—</div>
+        <div class="lbl">Domain</div>
+      </div>
+      <div class="stat">
+        <div class="num" id="statDocs">0</div>
+        <div class="lbl">Documents</div>
+      </div>
+      <div class="stat">
+        <div class="num" id="statPages">0</div>
+        <div class="lbl">Pages</div>
+      </div>
+      <div class="stat">
+        <div class="num" id="statYears">0</div>
+        <div class="lbl">Years spanned</div>
+      </div>
     </div>
   </div>
 
@@ -102,12 +571,16 @@
     <button id="scanBtn" style="display:none;">Scan selected</button>
     <span id="scanStatus"></span>
   </div>
- <div id="sectionsPanel" style="display:none; padding:14px 28px; background:var(--panel); border-bottom:1px solid var(--border); max-height:300px; overflow-y:auto;">
-    <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Found these sections — pick the ones to crawl (or select all):</div>
+  <div id="sectionsPanel"
+    style="display:none; padding:14px 28px; background:var(--panel); border-bottom:1px solid var(--border); max-height:300px; overflow-y:auto;">
+    <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">Found these sections — pick the ones to crawl
+      (or select all):</div>
     <div id="sectionsList" style="display:flex; flex-wrap:wrap; gap:8px;"></div>
   </div>
   <div id="progressWrap">
-    <div id="progressBarOuter"><div id="progressBarFill"></div></div>
+    <div id="progressBarOuter">
+      <div id="progressBarFill"></div>
+    </div>
     <div id="stageRow">
       <span class="stage" data-stage="creating_scraper">1. Create scraper</span>
       <span class="stage" data-stage="scraping">2. Crawl site &amp; collect data</span>
@@ -126,79 +599,86 @@
     </div>
   </div>
 
-  <div id="network"><div id="emptyState"><div class="icon">🕸️</div><div>Enter a URL above and click Scan</div></div></div>
- <div id="zoomHint">Scroll to zoom · Drag background to pan · Click a year cluster to expand</div>
-<div id="treePanel"></div>
-<div id="zoomControls">
-  <button id="zoomInBtn">+</button>
-  <button id="zoomOutBtn">−</button>
-</div>
-<button id="resetViewBtn" title="Reset view">⤢</button>
+  <div id="network">
+    <div id="emptyState">
+      <div class="icon">🕸️</div>
+      <div>Enter a URL above and click Scan</div>
+    </div>
+  </div>
+  <div id="zoomHint">Scroll to zoom · Drag background to pan · Click a year cluster to expand</div>
+  <div id="treePanel"></div>
+  <div id="zoomControls">
+    <button id="zoomInBtn">+</button>
+    <button id="zoomOutBtn">−</button>
+  </div>
+  <button id="resetViewBtn" title="Reset view">⤢</button>
   <div id="detail"></div>
-  <div id="healPanel"><span class="heal-title">Self-heal log</span><div id="healEntries"></div></div>
+  <div id="healPanel"><span class="heal-title">Scrape Log</span>
+    <div id="healEntries"></div>
+  </div>
 
   <script>
-    const colorMap = { Domain:"#4f8cff", Page:"#34d399", Document:"#fb923c" };
+    const colorMap = { Domain: "#4f8cff", Page: "#34d399", Document: "#fb923c" };
     let network = null, allNodesData = null;
 
-    function yearOf(s){ const m=(s||"").match(/(\d{4})/); return m?m[1]:"undated"; }
+    function yearOf(s) { const m = (s || "").match(/(\d{4})/); return m ? m[1] : "undated"; }
     document.addEventListener("click", (e) => {
-  if (e.target && e.target.id === "fitBtn" && network) {
-    network.fit({ animation: { duration: 500 } });
-  }
-});
+      if (e.target && e.target.id === "fitBtn" && network) {
+        network.fit({ animation: { duration: 500 } });
+      }
+    });
 
-document.getElementById("zoomInBtn").addEventListener("click", () => {
-  if (!network) return;
-  const scale = Math.min(2.5, network.getScale() * 1.25);
-  network.moveTo({ scale, animation: { duration: 200 } });
-});
-document.getElementById("zoomOutBtn").addEventListener("click", () => {
-  if (!network) return;
-  const scale = Math.max(0.2, network.getScale() / 1.25);
-  network.moveTo({ scale, animation: { duration: 200 } });
-});
-document.getElementById("resetViewBtn").addEventListener("click", () => {
-  if (network) network.fit({ animation: { duration: 500 } });
-});
+    document.getElementById("zoomInBtn").addEventListener("click", () => {
+      if (!network) return;
+      const scale = Math.min(2.5, network.getScale() * 1.25);
+      network.moveTo({ scale, animation: { duration: 200 } });
+    });
+    document.getElementById("zoomOutBtn").addEventListener("click", () => {
+      if (!network) return;
+      const scale = Math.max(0.2, network.getScale() / 1.25);
+      network.moveTo({ scale, animation: { duration: 200 } });
+    });
+    document.getElementById("resetViewBtn").addEventListener("click", () => {
+      if (network) network.fit({ animation: { duration: 500 } });
+    });
 
     function buildTree(graph) {
-  const panel = document.getElementById("treePanel");
-  const domain = graph.nodes.find(n => n.node_type === "Domain");
-  const pages = graph.nodes.filter(n => n.node_type === "Page");
-  const docs = graph.nodes.filter(n => n.node_type === "Document");
+      const panel = document.getElementById("treePanel");
+      const domain = graph.nodes.find(n => n.node_type === "Domain");
+      const pages = graph.nodes.filter(n => n.node_type === "Page");
+      const docs = graph.nodes.filter(n => n.node_type === "Document");
 
-  let html = `<div style="font-weight:700;margin-bottom:10px;">🕸️ ${domain ? domain.label : "Site"}</div>`;
-  pages.forEach(page => {
-    const pageDocs = docs.filter(d => {
-      const edge = graph.edges.find(e => e.edge_type === "LINKS_TO" && e.target_node_id === d.id && e.source_node_id === page.id);
-      return !!edge;
-    });
-    const shortPath = page.url ? page.url.replace(domain.url, "") || "/" : page.label;
-    html += `<details><summary>📁 ${shortPath} (${pageDocs.length})</summary>`;
-    pageDocs.forEach(d => {
-      html += `<div class="doc-item" data-node-id="${d.id}">📄 ${d.label.length > 30 ? d.label.slice(0,30)+"…" : d.label}</div>`;
-    });
-    html += `</details>`;
-  });
-  panel.innerHTML = html;
-  panel.style.display = "block";
+      let html = `<div style="font-weight:700;margin-bottom:10px;">🕸️ ${domain ? domain.label : "Site"}</div>`;
+      pages.forEach(page => {
+        const pageDocs = docs.filter(d => {
+          const edge = graph.edges.find(e => e.edge_type === "LINKS_TO" && e.target_node_id === d.id && e.source_node_id === page.id);
+          return !!edge;
+        });
+        const shortPath = page.url ? page.url.replace(domain.url, "") || "/" : page.label;
+        html += `<details><summary>📁 ${shortPath} (${pageDocs.length})</summary>`;
+        pageDocs.forEach(d => {
+          html += `<div class="doc-item" data-node-id="${d.id}">📄 ${d.label.length > 30 ? d.label.slice(0, 30) + "…" : d.label}</div>`;
+        });
+        html += `</details>`;
+      });
+      panel.innerHTML = html;
+      panel.style.display = "block";
 
-  panel.querySelectorAll(".doc-item").forEach(el => {
-    el.addEventListener("click", () => {
-      const id = parseInt(el.dataset.nodeId);
-      const node = allNodesData.nodesDS.get(id);
-      if (node && node.hidden && node.yearParent) {
-        const children = allNodesData.nodesDS.get({filter:n=>n.yearParent===node.yearParent});
-        allNodesData.nodesDS.update(children.map(c=>({id:c.id, hidden:false})));
-        const childEdges = allNodesData.edgesDS.get({filter:ed=>ed.id && ed.id.startsWith(`e_${node.yearParent}_`)});
-        allNodesData.edgesDS.update(childEdges.map(ed=>({id:ed.id, hidden:false})));
-      }
-      network.selectNodes([id]);
-      network.focus(id, { scale: 1.3, animation: { duration: 400 } });
-    });
-  });
-}
+      panel.querySelectorAll(".doc-item").forEach(el => {
+        el.addEventListener("click", () => {
+          const id = parseInt(el.dataset.nodeId);
+          const node = allNodesData.nodesDS.get(id);
+          if (node && node.hidden && node.yearParent) {
+            const children = allNodesData.nodesDS.get({ filter: n => n.yearParent === node.yearParent });
+            allNodesData.nodesDS.update(children.map(c => ({ id: c.id, hidden: false })));
+            const childEdges = allNodesData.edgesDS.get({ filter: ed => ed.id && ed.id.startsWith(`e_${node.yearParent}_`) });
+            allNodesData.edgesDS.update(childEdges.map(ed => ({ id: ed.id, hidden: false })));
+          }
+          network.selectNodes([id]);
+          network.focus(id, { scale: 1.3, animation: { duration: 400 } });
+        });
+      });
+    }
 
     function renderGraph(graph) {
       document.getElementById("emptyState").style.display = "none";
@@ -218,32 +698,38 @@ document.getElementById("resetViewBtn").addEventListener("click", () => {
       const nodes = [], edges = [], nodeMeta = {};
       graph.nodes.forEach(n => {
         if (n.node_type === "Document") return;
-        nodes.push({ id:n.id, label:n.label, color:{background:colorMap[n.node_type],border:colorMap[n.node_type]},
-          shape:n.node_type==="Domain"?"star":"dot", size:n.node_type==="Domain"?34:20,
-          font:{color:"#e8ecf3",face:"Inter",size:13} });
+        nodes.push({
+          id: n.id, label: n.label, color: { background: colorMap[n.node_type], border: colorMap[n.node_type] },
+          shape: n.node_type === "Domain" ? "star" : "dot", size: n.node_type === "Domain" ? 34 : 20,
+          font: { color: "#e8ecf3", face: "Inter", size: 13 }
+        });
         nodeMeta[n.id] = n;
       });
 
       let yid = 100000;
       Object.keys(byYear).sort().reverse().forEach(year => {
         const yId = yid++;
-        nodes.push({ id:yId, label:`${year}  (${byYear[year].length})`, color:{background:"#8b7cf6",border:"#8b7cf6"},
-          shape:"box", shapeProperties:{borderRadius:8}, size:22, font:{color:"#fff",face:"Inter",size:13,bold:true}, isYearCluster:true });
-        if (domainNode) edges.push({ from:domainNode.id, to:yId, color:{color:"#2a3244"}, width:1.5 });
+        nodes.push({
+          id: yId, label: `${year}  (${byYear[year].length})`, color: { background: "#8b7cf6", border: "#8b7cf6" },
+          shape: "box", shapeProperties: { borderRadius: 8 }, size: 22, font: { color: "#fff", face: "Inter", size: 13, bold: true }, isYearCluster: true
+        });
+        if (domainNode) edges.push({ from: domainNode.id, to: yId, color: { color: "#2a3244" }, width: 1.5 });
         byYear[year].forEach(doc => {
-          nodes.push({ id:doc.id, label:doc.label.length>38?doc.label.slice(0,38)+"…":doc.label,
-            color:{background:"#fb923c",border:"#fb923c"}, shape:"box", shapeProperties:{borderRadius:4},
-            font:{color:"#1a1005",face:"Inter",size:11}, size:12, hidden:true, yearParent:yId });
+          nodes.push({
+            id: doc.id, label: doc.label.length > 38 ? doc.label.slice(0, 38) + "…" : doc.label,
+            color: { background: "#fb923c", border: "#fb923c" }, shape: "box", shapeProperties: { borderRadius: 4 },
+            font: { color: "#1a1005", face: "Inter", size: 11 }, size: 12, hidden: true, yearParent: yId
+          });
           nodeMeta[doc.id] = doc;
-          edges.push({ from:yId, to:doc.id, color:{color:"#3a2a1a"}, hidden:true, id:`e_${yId}_${doc.id}` });
+          edges.push({ from: yId, to: doc.id, color: { color: "#3a2a1a" }, hidden: true, id: `e_${yId}_${doc.id}` });
         });
       });
 
       graph.edges.forEach(e => {
         const src = graph.nodes.find(n => n.id === e.source_node_id);
         const tgt = graph.nodes.find(n => n.id === e.target_node_id);
-        if (src && tgt && src.node_type!=="Document" && tgt.node_type!=="Document" && e.edge_type==="LINKS_TO") {
-          edges.push({ from:e.source_node_id, to:e.target_node_id, color:{color:"#2a3244"}, width:2 });
+        if (src && tgt && src.node_type !== "Document" && tgt.node_type !== "Document" && e.edge_type === "LINKS_TO") {
+          edges.push({ from: e.source_node_id, to: e.target_node_id, color: { color: "#2a3244" }, width: 2 });
         }
       });
 
@@ -251,40 +737,40 @@ document.getElementById("resetViewBtn").addEventListener("click", () => {
       allNodesData = { nodesDS, edgesDS, nodeMeta };
 
       const options = {
-        physics:{ barnesHut:{gravitationalConstant:-6000,springLength:140,springConstant:.03}, stabilization:{iterations:150} },
-        interaction:{ hover:true, zoomView:false, dragView:true, tooltipDelay:150 },
-        nodes:{ borderWidth:2 }, edges:{ smooth:{type:"continuous"} }
+        physics: { barnesHut: { gravitationalConstant: -6000, springLength: 140, springConstant: .03 }, stabilization: { iterations: 150 } },
+        interaction: { hover: true, zoomView: false, dragView: true, tooltipDelay: 150 },
+        nodes: { borderWidth: 2 }, edges: { smooth: { type: "continuous" } }
       };
       const container = document.getElementById("network");
-network = new vis.Network(container, {nodes:nodesDS, edges:edgesDS}, options);
-network.once("stabilizationIterationsDone", () => {
-  network.fit({ animation: { duration: 500 } });
-  setTimeout(() => {
-    if (network.getScale() > 1.2) {
-      network.moveTo({ scale: 1.2, animation: { duration: 300 } });
-    }
-  }, 550);
-});
+      network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, options);
+      network.once("stabilizationIterationsDone", () => {
+        network.fit({ animation: { duration: 500 } });
+        setTimeout(() => {
+          if (network.getScale() > 1.2) {
+            network.moveTo({ scale: 1.2, animation: { duration: 300 } });
+          }
+        }, 550);
+      });
 
-     container.addEventListener("wheel", ev => {
-  ev.preventDefault();
-  const scale = network.getScale();
-  const zoomFactor = Math.exp(-ev.deltaY * 0.0015);  // smooth, proportional to scroll speed
-  const newScale = Math.max(0.2, Math.min(2.5, scale * zoomFactor));
-  const pointer = network.DOMtoCanvas({x:ev.offsetX,y:ev.offsetY});
-  network.moveTo({scale:newScale, position:pointer, animation:{duration:60}});
-}, {passive:false});
+      container.addEventListener("wheel", ev => {
+        ev.preventDefault();
+        const scale = network.getScale();
+        const zoomFactor = Math.exp(-ev.deltaY * 0.0015);  // smooth, proportional to scroll speed
+        const newScale = Math.max(0.2, Math.min(2.5, scale * zoomFactor));
+        const pointer = network.DOMtoCanvas({ x: ev.offsetX, y: ev.offsetY });
+        network.moveTo({ scale: newScale, position: pointer, animation: { duration: 60 } });
+      }, { passive: false });
 
       network.on("click", params => {
-        if (params.nodes.length === 0) { document.getElementById("detail").style.display="none"; return; }
+        if (params.nodes.length === 0) { document.getElementById("detail").style.display = "none"; return; }
         const clickedId = params.nodes[0];
         const node = nodesDS.get(clickedId);
         if (node.isYearCluster) {
-          const children = nodesDS.get({filter:n=>n.yearParent===clickedId});
-          const anyHidden = children.some(c=>c.hidden);
-          nodesDS.update(children.map(c=>({id:c.id, hidden:!anyHidden})));
-          const childEdges = edgesDS.get({filter:e=>e.id && e.id.startsWith(`e_${clickedId}_`)});
-          edgesDS.update(childEdges.map(e=>({id:e.id, hidden:!anyHidden})));
+          const children = nodesDS.get({ filter: n => n.yearParent === clickedId });
+          const anyHidden = children.some(c => c.hidden);
+          nodesDS.update(children.map(c => ({ id: c.id, hidden: !anyHidden })));
+          const childEdges = edgesDS.get({ filter: e => e.id && e.id.startsWith(`e_${clickedId}_`) });
+          edgesDS.update(childEdges.map(e => ({ id: e.id, hidden: !anyHidden })));
           return;
         }
         const meta = nodeMeta[clickedId];
@@ -295,17 +781,17 @@ network.once("stabilizationIterationsDone", () => {
           <span class="close" onclick="document.getElementById('detail').style.display='none'">✕</span>
           <h3>${meta.label}</h3>
           <div class="field"><div class="label">Type</div><div class="value">${meta.node_type}</div></div>
-          ${meta.file_type?`<div class="field"><div class="label">File type</div><div class="value">${meta.file_type}</div></div>`:""}
-          ${meta.discovered_via?`<div class="field"><div class="label">Discovered via</div><div class="value">${meta.discovered_via}</div></div>`:""}
-          ${meta.url?`<div class="field"><div class="label">URL</div><div class="value"><a href="${meta.url}" target="_blank">${meta.url}</a></div></div>`:""}
-          <div class="field"><div class="label">First seen</div><div class="value">${(meta.first_seen||"").slice(0,19).replace("T"," ")}</div></div>`;
+          ${meta.file_type ? `<div class="field"><div class="label">File type</div><div class="value">${meta.file_type}</div></div>` : ""}
+          ${meta.discovered_via ? `<div class="field"><div class="label">Discovered via</div><div class="value">${meta.discovered_via}</div></div>` : ""}
+          ${meta.url ? `<div class="field"><div class="label">URL</div><div class="value"><a href="${meta.url}" target="_blank">${meta.url}</a></div></div>` : ""}
+          <div class="field"><div class="label">First seen</div><div class="value">${(meta.first_seen || "").slice(0, 19).replace("T", " ")}</div></div>`;
       });
 
       if (graph.scrape_log && graph.scrape_log.length) {
         document.getElementById("healPanel").style.display = "flex";
         document.getElementById("healEntries").innerHTML = graph.scrape_log.map(l => `
           <div class="heal-entry"><span class="heal-status ${l.status}">${l.status}</span>
-          <span class="heal-note">${l.notes||""} · ${(l.scraped_at||"").slice(0,19).replace("T"," ")}</span></div>`).join("");
+          <span class="heal-note">${l.notes || ""} · ${(l.scraped_at || "").slice(0, 19).replace("T", " ")}</span></div>`).join("");
       }
       buildTree(graph);
     }
@@ -314,25 +800,25 @@ network.once("stabilizationIterationsDone", () => {
       if (!allNodesData) return;
       const q = e.target.value.toLowerCase().trim();
       if (!q) return;
-      const match = allNodesData.nodesDS.get({filter:n=>!n.isYearCluster && n.label && n.label.toLowerCase().includes(q)})[0];
+      const match = allNodesData.nodesDS.get({ filter: n => !n.isYearCluster && n.label && n.label.toLowerCase().includes(q) })[0];
       if (match) {
         if (match.hidden && match.yearParent) {
-          const children = allNodesData.nodesDS.get({filter:n=>n.yearParent===match.yearParent});
-          allNodesData.nodesDS.update(children.map(c=>({id:c.id, hidden:false})));
-          const childEdges = allNodesData.edgesDS.get({filter:ed=>ed.id && ed.id.startsWith(`e_${match.yearParent}_`)});
-          allNodesData.edgesDS.update(childEdges.map(ed=>({id:ed.id, hidden:false})));
+          const children = allNodesData.nodesDS.get({ filter: n => n.yearParent === match.yearParent });
+          allNodesData.nodesDS.update(children.map(c => ({ id: c.id, hidden: false })));
+          const childEdges = allNodesData.edgesDS.get({ filter: ed => ed.id && ed.id.startsWith(`e_${match.yearParent}_`) });
+          allNodesData.edgesDS.update(childEdges.map(ed => ({ id: ed.id, hidden: false })));
         }
         network.selectNodes([match.id]);
-        network.focus(match.id, {scale:1.3, animation:{duration:400}});
+        network.focus(match.id, { scale: 1.3, animation: { duration: 400 } });
       }
     });
 
     // --- scan flow ---
-    const stageOrder = ["creating_scraper","scraping","building","done"];
+    const stageOrder = ["creating_scraper", "scraping", "building", "done"];
     function updateStages(current) {
       document.querySelectorAll(".stage").forEach(el => {
         const s = el.dataset.stage;
-        el.classList.remove("active","complete","errored");
+        el.classList.remove("active", "complete", "errored");
         const idx = stageOrder.indexOf(s), curIdx = stageOrder.indexOf(current);
         if (current === "error") { if (idx <= curIdx) el.classList.add("errored"); }
         else if (idx < curIdx || current === "done") el.classList.add("complete");
@@ -354,7 +840,7 @@ network.once("stabilizationIterationsDone", () => {
       document.getElementById("progressWrap").style.display = "block";
       document.getElementById("progressBarFill").className = "indeterminate";
 
-      const res = await fetch("/api/discover", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({url}) });
+      const res = await fetch("/api/discover", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
       const { job_id } = await res.json();
 
       const poll = setInterval(async () => {
@@ -414,10 +900,10 @@ network.once("stabilizationIterationsDone", () => {
       statusEl.textContent = "Starting crawl...";
       statusEl.style.color = "var(--muted)";
 
-      const stagePct = { queued:5, creating_scraper:20, scraping:55, building:85, done:100, error:100 };
+      const stagePct = { queued: 5, creating_scraper: 20, scraping: 55, building: 85, done: 100, error: 100 };
 
       const res = await fetch("/api/scan", {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: rootUrlForScan, seeds, max_pages: 30 })
       });
       const { job_id } = await res.json();
@@ -428,7 +914,7 @@ network.once("stabilizationIterationsDone", () => {
         updateStages(s.status);
 
         if (s.status === "creating_scraper") { fill.className = "indeterminate"; }
-        else { fill.className = ""; fill.style.width = (stagePct[s.status]||20) + "%"; }
+        else { fill.className = ""; fill.style.width = (stagePct[s.status] || 20) + "%"; }
 
         if (s.status === "done") {
           clearInterval(poll);
@@ -447,4 +933,5 @@ network.once("stabilizationIterationsDone", () => {
     });
   </script>
 </body>
+
 </html>
