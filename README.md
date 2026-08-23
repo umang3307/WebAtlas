@@ -13,9 +13,8 @@ Built for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-v
    and returns every internal page it linked to (notices, tenders, fee
    structures, etc.) — including any documents sitting right on the homepage
 3. Pick which sections to actually crawl (or select all)
-4. Click **Scan selected** — WebAtlas crawls those sections and their
-   linked sub-pages (up to a depth/page cap, default 30 pages / 2 hops deep)
-   using the *same* collector for every page, following only same-site links
+4. Click **Scan selected** — WebAtlas crawls exactly those sections (up to
+   a page cap, default 25 pages) using the *same* collector for every page
 5. A generic recursive extractor (`scraper/generic_extractor.py`) pulls
    documents *and* internal links out of whatever JSON shape the collector
    returns — no hardcoded field names, so one collector generalizes across
@@ -41,14 +40,21 @@ to refine the collector after an initial under-specified pass. See the
 live "Self-heal log" panel in the app (bottom bar) for the recorded events.
 
 ## AI-use disclosure
-Built with AI coding assistance (Claude) for scaffolding the backend,
-database layer, and frontend. [Fill in: what you personally wrote, tested,
-and debugged — be specific, you need to be able to explain every part.]
+Built with AI coding assistance (Claude) for initial scaffolding of the
+Flask backend, SQLite schema, Bright Data API client, and the generic
+JSON extractor pattern. From there, we tested it against real target sites,
+debugged issues that only showed up under real crawls (including a crash
+in the scan pipeline and a mismatch between the crawl depth the code
+actually used vs. what we'd first documented), tuned the Scraper Studio
+collector prompt through the self-heal workflow above, and wired up the
+frontend polling/rendering UI. We can walk through and explain every part
+of this codebase.
 
 ## Scope / roadmap
 - No document content extraction (OCR/parsing) — deliberately out of scope
   to keep the tool fast and domain-agnostic; the graph is a map, not an analysis.
 - Government sites are excluded per hackathon rules.
 
-## Team
-[Fill in names]
+## Team — Sunflowers
+- Umang Agarwal
+- Aashvi Pandey

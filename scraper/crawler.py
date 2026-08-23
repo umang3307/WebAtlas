@@ -43,8 +43,10 @@ def crawl_site(seed_urls, root_netloc, collector_id, run_collector_fn,
 
         try:
             records, _snapshot_id = run_collector_fn(collector_id, url)
-        except Exception:
-            continue
+        except Exception as e:
+            if status_cb:
+                status_cb(pages_crawled, max_pages, f"{url} (failed: {e})")
+        continue
 
         pages_crawled += 1
         if not records:

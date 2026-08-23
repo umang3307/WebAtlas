@@ -109,7 +109,7 @@ def _run_scan_job(job_id, root_url, seed_urls=None, max_pages=None):
                 continue
             seen_doc_urls.add(doc_url)
 
-            page_url = item["page_url"] or target_url
+            page_url = item["page_url"] or root_url
             if page_url not in page_nodes:
                 page_node_id = database.add_node(scan_id, "Page", page_url, url=page_url)
                 database.add_edge(scan_id, domain_node_id, page_node_id, "LINKS_TO")
