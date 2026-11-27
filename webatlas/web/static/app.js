@@ -60,6 +60,7 @@
       documents: [], pages: [], issues: [], events: [],
       cursors: { events: 0, documents: 0, pages: 0, issues: 0 },
       filter: { q: "", types: new Set(), page: null }, docLimit: PAGE_SIZE, pageLimit: PAGE_SIZE,
+      typeCounts: new Map(),   // kept up to date as documents arrive, instead of recounting
     };
   }
 
@@ -402,6 +403,7 @@
     scan.pages.push(...data.pages);
     scan.documents.push(...data.documents);
     scan.issues.push(...data.issues);
+    for (const d of data.documents) scan.typeCounts.set(d.doc_type, (scan.typeCounts.get(d.doc_type) || 0) + 1);
     scan.events.push(...data.events);
     if (scan.events.length > 1500) scan.events.splice(0, scan.events.length - 1500);
     c.pages += data.pages.length;
@@ -415,7 +417,13 @@
     scan.status = data.status;
     renderHeader(data);
     if (data.events.length) appendActivity(data.events);
-    scheduleRender();
+    // Only rebuild the tables that actually received new rows.
+    const changed = [];
+    if (data.documents.length || first) changed.push("documents");
+    if (data.pages.length || first) changed.push("pages");
+    if (data.issues.length || first) changed.push("issues");
+    if (statusChanged) changed.push("documents", "pages", "issues");   // empty-state wording depends on status
+    if (changed.length) scheduleRender(changed);
 
     if (data.status === "running") {
       pollTimer = setTimeout(() => poll(token), POLL_MS);
@@ -490,15 +498,19 @@
 
   /* ---------------------------------------------------------------- tables */
 
-  function scheduleRender() {
+  const ALL_PARTS = ["documents", "pages", "issues"];
+  const pendingParts = new Set();
+  function scheduleRender(parts = ALL_PARTS) {
+    for (const p of parts) pendingParts.add(p);
     if (renderQueued) return;
     renderQueued = true;
     requestAnimationFrame(() => {
       renderQueued = false;
-      renderChips();
-      renderDocuments();
-      renderPages();
-      renderIssues();
+      if (!scan) { pendingParts.clear(); return; }
+      if (pendingParts.has("documents")) { renderChips(); renderDocuments(); }
+      if (pendingParts.has("pages")) renderPages();
+      if (pendingParts.has("issues")) renderIssues();
+      pendingParts.clear();
     });
   }
 
@@ -508,10 +520,8 @@
   }
 
   function renderChips() {
-    const counts = new Map();
-    for (const d of scan.documents) counts.set(d.doc_type, (counts.get(d.doc_type) || 0) + 1);
     const wrap = $("typeChips");
-    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const sorted = [...scan.typeCounts.entries()].sort((a, b) => b[1] - a[1]);
     const key = sorted.map(([t, n]) => `${t}:${n}`).join(",") + "|" + [...scan.filter.types].join(",");
     if (wrap.dataset.key === key) return;
     wrap.dataset.key = key;
@@ -521,7 +531,7 @@
       b.addEventListener("click", () => {
         if (scan.filter.types.has(t)) scan.filter.types.delete(t); else scan.filter.types.add(t);
         scan.docLimit = PAGE_SIZE;
-        scheduleRender();
+        scheduleRender(["documents"]);
       });
       return b;
     }));
@@ -632,14 +642,14 @@
     if (url) $("pageFilterName").textContent = shortPath(url);
     scan.docLimit = PAGE_SIZE;
     if (url) selectTab("documents");
-    if (rerender) scheduleRender();
+    if (rerender) scheduleRender(["documents"]);
   }
 
   function focusDocument(doc) {
     selectTab("documents");
     $("docSearch").value = doc.title || doc.final_url;
     scan.filter.q = $("docSearch").value;
-    scheduleRender();
+    scheduleRender(["documents"]);
   }
 
   /* ---------------------------------------------------------------- tabs */
@@ -752,10 +762,15 @@
     let searchTimer = 0;
     $("docSearch").addEventListener("input", () => {
       clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => { scan.filter.q = $("docSearch").value.trim(); scan.docLimit = PAGE_SIZE; scheduleRender(); }, 150);
+      searchTimer = setTimeout(() => {
+        if (!scan) return;
+        scan.filter.q = $("docSearch").value.trim();
+        scan.docLimit = PAGE_SIZE;
+        scheduleRender(["documents"]);
+      }, 150);
     });
-    $("docMore").addEventListener("click", () => { scan.docLimit += PAGE_SIZE; scheduleRender(); });
-    $("pageMore").addEventListener("click", () => { scan.pageLimit += PAGE_SIZE; scheduleRender(); });
+    $("docMore").addEventListener("click", () => { scan.docLimit += PAGE_SIZE; scheduleRender(["documents"]); });
+    $("pageMore").addEventListener("click", () => { scan.pageLimit += PAGE_SIZE; scheduleRender(["pages"]); });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("sectionsPanel").hidden) $("sectionsPanel").hidden = true;
     });
