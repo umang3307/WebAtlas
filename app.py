@@ -41,8 +41,11 @@ _YEAR = re.compile(r"(19[89]\d|20\d\d)")
 ALLOW_PRIVATE = os.environ.get("WEBATLAS_ALLOW_PRIVATE") == "1"
 
 
+SCAN_TIME_LIMIT = 600   # seconds; a scan returns what it found so far after this
+
+
 def _config(**overrides) -> CrawlConfig:
-    return CrawlConfig(allow_private_networks=ALLOW_PRIVATE, **overrides)
+    return CrawlConfig(allow_private_networks=ALLOW_PRIVATE, max_duration=SCAN_TIME_LIMIT, **overrides)
 
 
 def _set(job_id, status, message, **extra):
@@ -140,8 +143,10 @@ def _run_scan_job(job_id, root_url, seed_urls, max_pages):
             notes=f"crawled {len(result.pages)} pages, found {len(result.documents)} documents "
                   f"across {len(page_nodes)} pages ({result.sitemap_urls} URLs from sitemaps)")
         database.finish_scan(scan_id)
-        _set(job_id, "done", f"Crawled {len(result.pages)} pages, found {len(result.documents)} documents.",
-             scan_id=scan_id)
+        message = f"Crawled {len(result.pages)} pages, found {len(result.documents)} documents."
+        if result.stopped_early:
+            message += f" Stopped early: {result.stopped_early}."
+        _set(job_id, "done", message, scan_id=scan_id)
     except Exception as e:
         _set(job_id, "error", str(e))
 

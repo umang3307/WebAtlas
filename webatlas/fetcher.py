@@ -103,6 +103,7 @@ class Fetcher:
         self.resolver = resolver
         self.throttle = HostThrottle(config.per_host_delay)
         self._checked_hosts: set[str] = set()
+        self.requests_made = 0
         self._client = httpx.AsyncClient(
             headers={"User-Agent": config.user_agent, "Accept": "*/*"},
             timeout=config.timeout,
@@ -167,6 +168,7 @@ class Fetcher:
         raise FetchError(f"{type(last_error).__name__}: {last_error}" if last_error else "request failed")
 
     async def _send_once(self, method: str, url: str, max_bytes: int) -> FetchResult:
+        self.requests_made += 1
         async with self._client.stream(method, url) as response:
             body = bytearray()
             truncated = False

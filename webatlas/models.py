@@ -33,7 +33,8 @@ class Document:
     size_bytes: int | None = None
     last_modified: str = ""
     sha256: str | None = None      # only when download_documents is on
-    detected_by: str = ""          # "extension", "content-type", "content-disposition" or "magic-bytes"
+    detected_by: str = ""          # "content-type", "content-disposition", "magic-bytes", "extension"
+                                   # or "extension-unverified" (not checked: doc-check budget used up)
 
 
 @dataclass
@@ -50,6 +51,8 @@ class CrawlResult:
     failures: list[Failure] = field(default_factory=list)
     skipped_by_robots: list[str] = field(default_factory=list)
     sitemap_urls: int = 0
+    requests: int = 0              # HTTP requests sent (including retries and robots/sitemaps)
+    stopped_early: str = ""        # why the crawl ended before the queue was empty, if it did
     started_at: str = ""
     finished_at: str = ""
 
