@@ -21,8 +21,8 @@ page it was found on. No paid APIs, no API keys.
 | Spotting documents | File extension only | Extension, `Content-Type`, `Content-Disposition` and magic bytes |
 | JavaScript sites | Handled by Bright Data | Optional headless-browser fallback (Playwright) |
 | Security | User URL passed to a shell command | SSRF guard on every request and redirect, no shell calls, UI output escaped |
-| Interfaces | Web UI | Web UI + `webatlas` command-line tool |
-| Tests | None | 59 tests against a fake website (no network needed) |
+| Interfaces | Web UI | Scan console with a live site map, history and export, plus a `webatlas` CLI |
+| Tests | None | 83 tests against a fake website (no network needed), plus a live-site workflow |
 
 ## How it works
 
@@ -53,24 +53,37 @@ that respect `Retry-After`, and size limits on every download.
 git clone https://github.com/umang3307/WebAtlas.git
 cd WebAtlas
 pip install -e .
+webatlas ui
 ```
+
+That opens the scan console at `http://127.0.0.1:5000`.
+
+![WebAtlas scan console](docs/console.png)
+
+### The scan console
+
+- **Start a scan** from an address, or click **Choose sections…** to pick which parts of the site to start from.
+- **Pick a size:** Quick, Standard or Deep, or adjust depth, page limit, time limit, request delay and more.
+- **Watch it live.** The map places the start page at the centre and pages on rings by link depth, one slice per
+  site section; documents appear around the page that links to them. Click a page to see only its files.
+- **Explore the results:** search, filter by file type, see where each file was found and how it was confirmed,
+  and check the Issues tab for pages that failed or were skipped because of robots.txt.
+- **Stop** a scan at any time and keep what it found. **Export** to CSV or JSON. Past scans are saved in
+  `webatlas.db` and listed in the sidebar.
+
+The console only listens on `127.0.0.1`, rejects requests addressed to other host names (DNS rebinding),
+accepts only JSON for actions (CSRF), sends a strict Content-Security-Policy, and shows text from crawled
+sites strictly as text.
 
 ### Command line
 
 ```bash
-webatlas crawl https://www.example.edu --depth 2 --max-pages 200 --out results.json
+webatlas crawl https://www.example.edu --depth 2 --max-pages 200 --max-time 300 --out results.json
 ```
 
 Useful options: `--download` (hash documents with SHA-256 and drop duplicates), `--render` (headless browser
-for JavaScript-only pages), `--no-sitemap`, `--no-subdomains`, `--delay 1.0`. Run `webatlas crawl --help` for all.
-
-### Web UI
-
-```bash
-python app.py
-```
-
-Open `http://localhost:5000`, paste a URL, click **Discover sections**, choose sections, click **Scan selected**.
+for JavaScript-only pages), `--no-sitemap`, `--no-subdomains`, `--delay 1.0`, `--doc-checks 500`.
+Run `webatlas crawl --help` for all.
 
 ### JavaScript-heavy sites (optional)
 
@@ -89,7 +102,7 @@ ruff check .
 ```
 
 To try the crawler on a site running on your own machine, pass `--allow-private` to the CLI or set
-`WEBATLAS_ALLOW_PRIVATE=1` for the web app. Both are off by default.
+`WEBATLAS_ALLOW_PRIVATE=1` before `webatlas ui`. Both are off by default.
 
 ## Responsible use
 
@@ -99,10 +112,11 @@ keep it that way when crawling sites you don't own.
 ## Roadmap
 
 - [x] **Phase 1:** own crawler: robots.txt, sitemaps, document detection, SSRF guard, CLI, tests
+- [x] **Scan console:** live site map, scan settings, history, stop, CSV/JSON export
 - [ ] **Phase 2:** FastAPI backend, resumable background jobs, live progress (SSE), SQLAlchemy storage
 - [ ] **Phase 3:** document analysis: metadata leaks (authors, software, internal paths), emails, secrets
 - [ ] **Phase 4:** AI layer: local-LLM link prioritisation, document classification, RAG Q&A with citations
-- [ ] **Phase 5:** UI refresh, Docker Compose, benchmarks, demo
+- [ ] **Phase 5:** Docker Compose, benchmarks, demo
 
 ## History
 
