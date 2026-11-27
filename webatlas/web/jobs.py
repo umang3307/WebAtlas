@@ -169,22 +169,26 @@ class ScanManager:
         return job
 
     def _run(self, job: ScanJob) -> None:
+        error = ""
         try:
             result = asyncio.run(job.crawler.crawl(job.seeds))
-            job.status = "stopped" if result.stopped_early == "stopped by user" else "done"
+            status = "stopped" if result.stopped_early == "stopped by user" else "done"
         except Exception as exc:
-            job.status, job.error = "error", f"{type(exc).__name__}: {exc}"
+            status, error = "error", f"{type(exc).__name__}: {exc}"
             log.exception("scan %s failed", job.id)
         job.finished_mono = time.monotonic()
-        # Save whatever was found, even when the scan failed partway through.
+        # Save first, announce second: the scan only shows as finished once its results are in the
+        # database, so a reload or restart can never catch it half-saved. Partial results are kept.
         partial = job.crawler.result
         summary = summarize(partial, job.elapsed) if partial else {}
         try:
-            self.store.finish(job.id, job.status, summary, partial.to_dict() if partial else None,
-                              job.error or None, _now())
+            self.store.finish(job.id, status, summary, partial.to_dict() if partial else None,
+                              error or None, _now())
         except Exception as exc:   # e.g. disk full: keep the in-memory copy and say so
-            job.error = f"results could not be saved to the database: {exc}"
+            error = (error + "; " if error else "") + f"results could not be saved to the database: {exc}"
             log.exception("saving scan %s failed", job.id)
+        job.error = error
+        job.status = status
 
     def stop(self, scan_id: str) -> bool:
         job = self.jobs.get(scan_id)
