@@ -8,6 +8,7 @@ indexes (a sitemap that lists other sitemaps).
 from __future__ import annotations
 
 import zlib
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 from lxml import etree
@@ -48,17 +49,29 @@ def parse_sitemap(xml: bytes) -> tuple[list[str], list[str]]:
     return locs, []
 
 
-async def collect_sitemap_urls(root_url: str, fetcher: Fetcher, robots: RobotsCache, limit: int | None) -> list[str]:
+async def collect_sitemap_urls(
+    root_url: str,
+    fetcher: Fetcher,
+    robots: RobotsCache,
+    limit: int | None,
+    on_batch: Callable[[list[str]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[str]:
     """Find the site's sitemaps (robots.txt `Sitemap:` lines, else /sitemap.xml) and
-    return up to `limit` URLs listed in them (all of them if limit is None)."""
+    return up to `limit` URLs listed in them (all of them if limit is None).
+
+    `on_batch` receives the URLs of each sitemap file as soon as it's read, so a crawl can use
+    them right away; `should_stop` is checked between files so Stop and time limits apply here too."""
     parts = urlsplit(root_url)
     origin = f"{parts.scheme}://{parts.netloc}"
     queue = await robots.sitemaps(root_url) or [f"{origin}/sitemap.xml"]
     seen_files: set[str] = set()
     urls: list[str] = []
-
     max_files = MAX_SITEMAP_FILES if limit is not None else MAX_SITEMAP_FILES_UNLIMITED
+
     while queue and len(seen_files) < max_files and (limit is None or len(urls) < limit):
+        if should_stop and should_stop():
+            break
         sitemap_url = queue.pop(0)
         if sitemap_url in seen_files:
             continue
@@ -70,6 +83,9 @@ async def collect_sitemap_urls(root_url: str, fetcher: Fetcher, robots: RobotsCa
         if not result.ok:
             continue
         pages, children = parse_sitemap(result.body)
-        urls.extend(pages if limit is None else pages[: limit - len(urls)])
+        batch = pages if limit is None else pages[: limit - len(urls)]
+        urls.extend(batch)
+        if on_batch and batch:
+            on_batch(batch)
         queue.extend(children)
     return urls

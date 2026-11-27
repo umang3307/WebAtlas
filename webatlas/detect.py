@@ -121,6 +121,8 @@ def classify_response(url: str, content_type: str, content_disposition: str,
         return None
     if content_type in DOC_MIME_TYPES:
         return DOC_MIME_TYPES[content_type], "content-type"
+    if content_type == "text/plain" and doc_type_from_url(url) == "txt":
+        return "txt", "content-type"   # a .txt link served as plain text is the file itself
     filename = filename_from_disposition(content_disposition)
     if filename and _ext(filename) in DOC_EXTENSIONS:
         return DOC_EXTENSIONS[_ext(filename)], "content-disposition"
