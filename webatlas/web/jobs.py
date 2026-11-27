@@ -34,13 +34,16 @@ class TooManyScans(Exception):
 
 # Settings the interface may change, with their allowed ranges.
 SETTING_LIMITS: dict[str, tuple[type, float, float]] = {
-    "max_depth": (int, 0, 6),
-    "max_pages": (int, 1, 5000),
-    "max_duration": (float, 10, 7200),
-    "max_doc_checks": (int, 0, 20000),
+    "max_depth": (int, 0, 100),
+    "max_pages": (int, 1, 10_000_000),
+    "max_duration": (float, 10, 30 * 24 * 3600),
+    "max_doc_checks": (int, 0, 10_000_000),
     "concurrency": (int, 1, 16),
     "per_host_delay": (float, 0, 10),
 }
+# Limits a user may switch off entirely by sending null. Concurrency and delay always apply:
+# they protect the target site, not the user's time.
+LIFTABLE = ("max_depth", "max_pages", "max_duration", "max_doc_checks")
 BOOL_SETTINGS = ("use_sitemaps", "include_subdomains", "include_offsite_documents", "render_js",
                  "download_documents")
 
@@ -50,18 +53,26 @@ def _now() -> str:
 
 
 def clean_settings(raw: dict) -> dict:
-    """Keep only known settings, coerce types and clamp to safe ranges."""
+    """Keep only known settings, coerce types and clamp to safe ranges.
+    A liftable limit sent as null means "no limit"; a missing time limit gets the default."""
     out: dict = {}
     for key, (kind, low, high) in SETTING_LIMITS.items():
-        if key in raw and raw[key] is not None:
-            try:
-                out[key] = kind(min(max(kind(raw[key]), low), high))
-            except (TypeError, ValueError):
-                continue
+        if key not in raw:
+            continue
+        value = raw[key]
+        if value is None:
+            if key in LIFTABLE:
+                out[key] = None
+            continue
+        try:
+            out[key] = kind(min(max(kind(value), low), high))
+        except (TypeError, ValueError, OverflowError):
+            continue
     for key in BOOL_SETTINGS:
         if key in raw:
             out[key] = bool(raw[key])
-    out.setdefault("max_duration", DEFAULT_TIME_LIMIT)   # never start a scan without a time limit
+    if "max_duration" not in out:
+        out["max_duration"] = DEFAULT_TIME_LIMIT
     return out
 
 

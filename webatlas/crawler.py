@@ -36,7 +36,7 @@ from webatlas.render import Renderer, RenderUnavailable
 from webatlas.robots import RobotsCache
 from webatlas.safety import Resolver, UnsafeTargetError, default_resolver
 from webatlas.sitemap import collect_sitemap_urls
-from webatlas.urls import file_name, in_scope, normalize_url
+from webatlas.urls import file_name, in_scope, looks_like_trap, normalize_url
 
 EventCallback = Callable[[dict], None]
 
@@ -52,6 +52,11 @@ class _Item:
     depth: int = 0
     source_page: str = ""
     link_text: str = ""
+
+
+def _under(count: int, limit: int | float | None) -> bool:
+    """True while `count` is below `limit`; a limit of None means no limit."""
+    return limit is None or count < limit
 
 
 def _now() -> str:
@@ -151,7 +156,7 @@ class Crawler:
             count += 1
             if doc_type_from_url(url):
                 self._enqueue(DOC, url, depth=1)
-            elif self.config.max_depth >= 1:
+            elif _under(0, self.config.max_depth):   # depth 1 allowed
                 self._enqueue(PAGE, url, depth=1, from_sitemap=True)
         self.result.sitemap_urls = count
         self._emit("info", message=f"sitemap listed {count} in-scope URLs")
@@ -190,13 +195,13 @@ class Crawler:
 
     async def _process_page(self, item: _Item) -> None:
         cfg = self.config
-        if self._pages_reserved >= cfg.max_pages:
+        if not _under(self._pages_reserved, cfg.max_pages):
             return
         if not await self.robots.allowed(item.url):
             self.result.skipped_by_robots.append(item.url)
             self._emit("skipped", url=item.url, reason="robots.txt")
             return
-        if self._pages_reserved >= cfg.max_pages:   # re-check: other workers ran during the await
+        if not _under(self._pages_reserved, cfg.max_pages):   # re-check: other workers ran during the await
             return
         self._pages_reserved += 1
         self._emit("fetching", url=item.url, depth=item.depth,
@@ -242,7 +247,10 @@ class Crawler:
                 if cfg.include_offsite_documents or in_scope(link.url, self.root, cfg.include_subdomains):
                     self._enqueue(DOC, link.url, item.depth + 1, source_page=final, link_text=link.text)
                     docs_here += 1
-            elif item.depth + 1 <= cfg.max_depth and in_scope(link.url, self.root, cfg.include_subdomains):
+            elif _under(item.depth, cfg.max_depth) and in_scope(link.url, self.root, cfg.include_subdomains):
+                if looks_like_trap(link.url):
+                    self._skip_trap(link.url)
+                    continue
                 self._enqueue(PAGE, link.url, item.depth + 1, source_page=final, link_text=link.text)
 
         page = Page(url=final, depth=item.depth, status=response.status, title=title,
@@ -270,14 +278,14 @@ class Crawler:
 
     async def _process_doc(self, item: _Item) -> None:
         cfg = self.config
-        if len(self.result.documents) >= cfg.max_documents:
+        if not _under(len(self.result.documents), cfg.max_documents):
             return
         if not await self.robots.allowed(item.url):
             self.result.skipped_by_robots.append(item.url)
             self._emit("skipped", url=item.url, reason="robots.txt")
             return
 
-        if self._doc_checks >= cfg.max_doc_checks:
+        if not _under(self._doc_checks, cfg.max_doc_checks):
             # Budget for confirming documents is used up: list it from the link alone.
             self._record_unverified(item)
             return
@@ -308,7 +316,7 @@ class Crawler:
 
     async def _record_document(self, item: _Item, response: FetchResult, doc_type: str, detected_by: str) -> None:
         cfg = self.config
-        if len(self.result.documents) >= cfg.max_documents:
+        if not _under(len(self.result.documents), cfg.max_documents):
             return
         final = normalize_url(response.final_url) or item.url
 
@@ -343,7 +351,7 @@ class Crawler:
 
     def _record_unverified(self, item: _Item) -> None:
         key = f"url:{item.url}"
-        if key in self._doc_keys or len(self.result.documents) >= self.config.max_documents:
+        if key in self._doc_keys or not _under(len(self.result.documents), self.config.max_documents):
             return
         self._doc_keys.add(key)
         document = Document(url=item.url, final_url=item.url, title=item.link_text or file_name(item.url),
@@ -354,6 +362,13 @@ class Crawler:
                    detected_by=document.detected_by, documents_done=len(self.result.documents))
 
     # ------------------------------------------------------------------ helpers
+
+    def _skip_trap(self, url: str) -> None:
+        key = f"trap:{url}"
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self._fail(url, "skipped: looks like a crawler trap (URL too long or path repeats itself)")
 
     def _fail(self, url: str, reason: str) -> None:
         self.result.failures.append(Failure(url=url, reason=reason))

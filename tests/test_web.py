@@ -205,8 +205,24 @@ def test_rejects_foreign_host_header_dns_rebinding(client):
 
 
 def test_settings_are_clamped():
-    s = clean_settings({"max_pages": 10**9, "max_depth": -3, "concurrency": "abc", "render_js": 1, "x": 5})
-    assert s["max_pages"] == 5000 and s["max_depth"] == 0
+    s = clean_settings({"max_pages": 10**12, "max_depth": -3, "concurrency": "abc", "render_js": 1, "x": 5})
+    assert s["max_pages"] == 10_000_000 and s["max_depth"] == 0
     assert "concurrency" not in s and "x" not in s
     assert s["render_js"] is True
-    assert s["max_duration"] == 600   # a time limit is always set
+    assert s["max_duration"] == 600   # a missing time limit gets the default
+
+
+def test_limits_can_be_lifted_with_null_but_politeness_cannot():
+    s = clean_settings({"max_pages": None, "max_depth": None, "max_duration": None, "max_doc_checks": None,
+                        "concurrency": None, "per_host_delay": None})
+    assert s == {"max_pages": None, "max_depth": None, "max_duration": None, "max_doc_checks": None}
+
+
+def test_unlimited_scan_through_the_console(client):
+    res = start(client, settings={"per_host_delay": 0, "max_pages": None, "max_depth": None,
+                                  "max_duration": None, "max_doc_checks": None})
+    data = wait_done(client, res.get_json()["id"])
+    assert data["status"] == "done" and data["max_pages"] is None
+    # With no depth limit the two-hop spreadsheet is found and nothing is left unconfirmed.
+    assert any(d["final_url"].endswith("t-2023.xlsx") for d in data["documents"])
+    assert not any(d["detected_by"] == "extension-unverified" for d in data["documents"])

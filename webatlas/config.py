@@ -9,13 +9,15 @@ from webatlas import USER_AGENT
 
 @dataclass
 class CrawlConfig:
-    # How far and how wide to go.
-    max_depth: int = 2            # link hops away from a seed page
-    max_pages: int = 100          # HTML pages fetched (documents don't count)
-    max_documents: int = 5000     # stop recording documents after this many
-    max_doc_checks: int = 1000    # documents confirmed with a request; beyond this they're listed
-                                  # from their link alone and marked "extension-unverified"
-    max_duration: float | None = None  # seconds; when reached, stop and return what was found so far
+    # How far and how wide to go. Any of these can be None, meaning "no limit".
+    # The defaults are deliberately modest so a casual scan of a huge site (say, Wikipedia)
+    # can't run for days; lift them when you mean to.
+    max_depth: int | None = 2            # link hops away from a seed page
+    max_pages: int | None = 100          # HTML pages fetched (documents don't count)
+    max_documents: int | None = None     # documents recorded
+    max_doc_checks: int | None = 1000    # documents confirmed with a request; beyond this they're listed
+                                         # from their link alone and marked "extension-unverified"
+    max_duration: float | None = None    # seconds; when reached, stop and return what was found so far
 
     # Politeness.
     concurrency: int = 4          # pages fetched at the same time (across all hosts)
@@ -32,7 +34,7 @@ class CrawlConfig:
 
     # Discovery.
     use_sitemaps: bool = True
-    max_sitemap_urls: int = 5000
+    max_sitemap_urls: int | None = 50_000   # URLs read from sitemaps (None = all)
     include_subdomains: bool = True        # treat admissions.example.edu as part of example.edu
     include_offsite_documents: bool = True  # keep a PDF on a CDN if an in-scope page links to it
 

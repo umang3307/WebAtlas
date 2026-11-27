@@ -51,18 +51,22 @@
 
       <div class="settings" id="settings" hidden>
         <div class="settings-grid">
-          <label class="field"><span>Link depth</span>
-            <input type="number" id="max_depth" min="0" max="6" step="1">
-            <small>Hops away from the start pages</small></label>
-          <label class="field"><span>Page limit</span>
-            <input type="number" id="max_pages" min="1" max="5000" step="1">
-            <small>HTML pages to read</small></label>
-          <label class="field"><span>Time limit (minutes)</span>
-            <input type="number" id="max_minutes" min="1" max="120" step="1">
-            <small>Stops and keeps what it found</small></label>
-          <label class="field"><span>Files to confirm</span>
-            <input type="number" id="max_doc_checks" min="0" max="20000" step="10">
-            <small>More are listed unconfirmed</small></label>
+          <div class="field"><label for="max_depth">Link depth</label>
+            <div class="field-row"><input type="number" id="max_depth" min="0" max="100" step="1">
+              <label class="nolimit"><input type="checkbox" id="max_depth_off" data-for="max_depth">No limit</label></div>
+            <small>Hops away from the start pages</small></div>
+          <div class="field"><label for="max_pages">Page limit</label>
+            <div class="field-row"><input type="number" id="max_pages" min="1" max="10000000" step="1">
+              <label class="nolimit"><input type="checkbox" id="max_pages_off" data-for="max_pages">No limit</label></div>
+            <small>HTML pages to read</small></div>
+          <div class="field"><label for="max_minutes">Time limit (minutes)</label>
+            <div class="field-row"><input type="number" id="max_minutes" min="1" max="43200" step="1">
+              <label class="nolimit"><input type="checkbox" id="max_minutes_off" data-for="max_minutes">No limit</label></div>
+            <small>Stops and keeps what it found</small></div>
+          <div class="field"><label for="max_doc_checks">Files to confirm</label>
+            <div class="field-row"><input type="number" id="max_doc_checks" min="0" max="10000000" step="10">
+              <label class="nolimit"><input type="checkbox" id="max_doc_checks_off" data-for="max_doc_checks">No limit</label></div>
+            <small>More are listed unconfirmed</small></div>
           <label class="field"><span>Delay per site (seconds)</span>
             <input type="number" id="per_host_delay" min="0" max="10" step="0.1">
             <small>Be gentle with small servers</small></label>
@@ -70,6 +74,7 @@
             <input type="number" id="concurrency" min="1" max="16" step="1">
             <small>Across all hosts</small></label>
         </div>
+        <p class="limit-warning" id="limitWarning" role="status" hidden></p>
         <div class="toggles">
           <label class="toggle"><input type="checkbox" id="use_sitemaps"><span>Read the sitemap</span></label>
           <label class="toggle"><input type="checkbox" id="include_subdomains"><span>Include subdomains</span></label>
@@ -139,6 +144,7 @@
             <button class="icon-btn fit" id="zoomFit" type="button" aria-label="Fit map to view">Fit</button>
           </div>
           <div class="tooltip" id="tooltip" role="status" hidden></div>
+          <p class="map-note" id="mapNote" hidden></p>
           <div class="atlas-empty" id="atlasEmpty">
             <p class="lead">Map every public document on a website.</p>
             <p>Enter an address above. WebAtlas reads robots.txt and the sitemap, follows links,

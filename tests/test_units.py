@@ -5,7 +5,7 @@ import pytest
 from webatlas.detect import classify_response, doc_type_from_magic, doc_type_from_url, is_html
 from webatlas.extract import extract_page
 from webatlas.sitemap import parse_sitemap
-from webatlas.urls import in_scope, normalize_url, registered_domain
+from webatlas.urls import in_scope, looks_like_trap, normalize_url, registered_domain
 
 from .fake_site import OLE2, PDF, XLSX
 
@@ -82,6 +82,13 @@ def test_is_html_sniffs_untyped_pages():
     assert not is_html("application/pdf", PDF)
 
 # ---------------------------------------------------------------- extraction
+
+
+def test_trap_heuristics():
+    assert looks_like_trap("https://x.edu/a/b/a/b/a/b/a/b/")
+    assert looks_like_trap("https://x.edu/?" + "s=1&" * 600)
+    assert not looks_like_trap("https://x.edu/notices/2024/01/fee-circular.pdf")
+    assert not looks_like_trap("https://x.edu/docs/docs/")   # one repeat is normal
 
 
 def test_one_malformed_link_does_not_lose_the_others():
