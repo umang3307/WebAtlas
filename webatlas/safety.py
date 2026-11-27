@@ -20,10 +20,26 @@ class UnsafeTargetError(Exception):
     """Raised when a URL resolves to a private, loopback or otherwise internal address."""
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")   # well-known NAT64 prefix (RFC 6052)
+
+
+def _embedded_ipv4(addr: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """IPv6 forms that carry an IPv4 address inside them and reach it on the network."""
+    if addr.ipv4_mapped:                          # ::ffff:a.b.c.d
+        return addr.ipv4_mapped
+    if addr in _NAT64:                            # 64:ff9b::a.b.c.d, translated by a NAT64 gateway
+        return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    if int(addr) >> 32 == 0 and int(addr) > 1:    # ::a.b.c.d (deprecated "IPv4-compatible")
+        return ipaddress.IPv4Address(int(addr))
+    return None
+
+
 def is_public_ip(ip: str) -> bool:
     addr = ipaddress.ip_address(ip)
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
-        addr = addr.ipv4_mapped
+    if isinstance(addr, ipaddress.IPv6Address):
+        inner = _embedded_ipv4(addr)
+        if inner is not None:
+            addr = inner
     return addr.is_global and not addr.is_multicast
 
 
