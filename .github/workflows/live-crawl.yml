@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install --require-hashes -r requirements.lock && pip install --no-deps -e .
       - run: python scripts/live_crawl.py
@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with: { python-version: "3.12" }
       - run: pip install -e ".[render]" && playwright install --with-deps chromium
       - run: python scripts/live_crawl.py --render https://www.python.org/ https://react.dev/
