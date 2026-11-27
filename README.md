@@ -1,96 +1,129 @@
 # WebAtlas 🕸️
 
-**A self-healing scraper that turns any organization's public document surface into an explorable knowledge graph.**
+**A self-hosted crawler that finds every public document on a website and maps it as a knowledge graph.**
 
-Built for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-verse) — Bright Data Scraper Studio Hackathon, August 2026.
+Point it at a college, school or company site. WebAtlas reads its `robots.txt` and sitemap, crawls the
+site breadth-first, and records every PDF, Word, Excel, PowerPoint and archive file it links to, with the
+page it was found on. No paid APIs, no API keys.
 
----
-
-## 🌻 Team Details
-
-- **Team Name:** Sunflowers
-- **Team Members:**
-  1. Umang Agarwal
-  2. Aashvi Pandey
+> **Status: v2 in progress.** This branch replaces the Bright Data hackathon version with a crawler
+> WebAtlas owns end to end. See the [roadmap](#roadmap) for what's next.
 
 ---
 
-## What it does
+## What's new in v2 (Phase 1)
 
-Paste a URL — a college, school, or company's website — and WebAtlas automatically:
+| | v1 (hackathon) | v2 |
+|---|---|---|
+| Fetching pages | Bright Data Scraper Studio (paid, trial ended) | Own async crawler (`httpx`) |
+| Finding pages | AI-generated collector per domain | `robots.txt` + `sitemap.xml` + breadth-first crawl |
+| Following links | Selected pages only (`max_depth=0`) | Configurable depth and page budget |
+| Spotting documents | File extension only | Extension, `Content-Type`, `Content-Disposition` and magic bytes |
+| JavaScript sites | Handled by Bright Data | Optional headless-browser fallback (Playwright) |
+| Security | User URL passed to a shell command | SSRF guard on every request and redirect, no shell calls, UI output escaped |
+| Interfaces | Web UI | Scan console with a live site map, history and export, plus a `webatlas` CLI |
+| Tests | None | 83 tests against a fake website (no network needed), plus a live-site workflow |
 
-1. **Discovers** every internal page linked from that site using a Bright Data Scraper Studio collector
-2. Lets you **select** which sections to crawl (or scan everything)
-3. **Crawls** those sections, pulling out every downloadable document (PDFs, DOCs, XLS, etc.) it finds
-4. **Builds a live knowledge graph** — Domain → Page → Document — with full provenance for every node
-5. Renders it as an **interactive, explorable graph** with year-based clustering, search, and a directory-tree view
-
-No content parsing or OCR — WebAtlas maps *what exists and how it's linked*, not what's inside each document. That keeps it fast and generalizable across any site's structure.
-
-## Why it's different from just asking an LLM
-
-- **Persistent, structured state** — every scan is stored in a graph database with provenance, not a one-off chat answer
-- **Systematic discovery** — deterministically crawls every selected section, not "a few pages an agent thought to check"
-- **Self-healing extraction** — when a scan comes back with no usable data, WebAtlas automatically triggers `bdata scraper heal` and `bdata scraper approve` on the collector and retries, without any manual intervention
-- **A live, triggerable endpoint** — the Collector ID is wired directly into the app via Bright Data's `POST /dca/trigger` API, so any new domain becomes scannable on demand, no redeployment needed
-
-## Self-healing, built into the product
-
-Self-healing isn't just a terminal demo here — it's a real code path (`app.py` → `heal_collector()`):
-
-- If a scan finds zero documents, the app automatically runs a heal prompt against the collector, re-approves it, and retries the crawl — all without a human in the loop
-- If Bright Data reports a collector no longer exists (404), the app invalidates the cache and rebuilds it automatically
-- Every scrape attempt — success, healed, or failed — is logged with a timestamp and shown live in the app's **Scrape Log** panel at the bottom of the UI
-
-This means the resilience story isn't something we performed once for a recording — it's a standing feature of the pipeline.
-
-## Architecture
+## How it works
 
 ```
-URL input
-│
-▼
-Discover sections  ──── Scraper Studio collector reads the homepage,
-│                  returns every internal link + doc found there
-▼
-Section selection (user picks what to crawl)
-│
-▼
-Crawler  ──────────── same collector, run per selected page via
-│                 POST /dca/trigger → GET /dca/dataset
-▼
-Generic extractor  ─── recursively parses ANY JSON shape the collector
-│                  returns (no hardcoded field names) into
-│                  {document_url, title, date, page_url} records
-▼
-Knowledge graph (SQLite)  ── Domain/Page/Document nodes, LINKS_TO/
-│                        HOSTED_ON edges, full scrape_log provenance
-▼
-Interactive graph UI  ── year-clustered, searchable, directory-tree view,
-                         live Scrape Log panel
+seed URL
+  │
+  ├─ SSRF guard ─────── refuse localhost, private and cloud-metadata addresses (every redirect hop too)
+  ├─ robots.txt ─────── skip disallowed paths, honour Crawl-delay
+  ├─ sitemap.xml ────── add pages no menu links to (gzip and sitemap indexes supported)
+  ▼
+priority queue (breadth-first, documents first)
+  │
+  ├─ page ──► fetch HTML ──► extract links ──► same-site pages  → queue (until max depth)
+  │                                       └──► document links   → queue as "doc"
+  │          (if the "page" is really a file, e.g. /download.php?id=5 → record it as a document)
+  │
+  └─ doc  ──► HEAD (or first 4 KB) ──► confirm by Content-Type / filename / magic bytes ──► record
+  ▼
+Domain → Page → Document graph (SQLite) ──► interactive graph UI
 ```
 
-## Tech stack
+Politeness is built in: a per-host delay, a small number of concurrent requests, retries with backoff
+that respect `Retry-After`, and size limits on every download.
 
-Python, Flask, SQLite, vanilla JS + vis-network for the graph UI, Bright Data Scraper Studio (via the `bdata` CLI and REST API).
-
-## Running it
+## Quick start
 
 ```bash
-pip install -r requirements.txt
-npx -p @brightdata/cli bdata login
-cp .env.example .env   # paste your Bright Data API token
-python app.py
+git clone https://github.com/umang3307/WebAtlas.git
+cd WebAtlas
+pip install -e .
+webatlas ui
 ```
 
-Open `http://localhost:5000`, paste a URL, click **Discover sections**, pick what to scan, click **Scan selected**.
+That opens the scan console at `http://127.0.0.1:5000`.
+
+![WebAtlas scan console](docs/console.png)
+
+### The scan console
+
+- **Start a scan** from an address, or click **Choose sections…** to pick which parts of the site to start from.
+- **Pick a size:** Quick, Standard or Deep, or adjust depth, page limit, time limit, request delay and more.
+- **Watch it live.** The map places the start page at the centre and pages on rings by link depth, one slice per
+  site section; documents appear around the page that links to them. Click a page to see only its files.
+- **Explore the results:** search, filter by file type, see where each file was found and how it was confirmed,
+  and check the Issues tab for pages that failed or were skipped because of robots.txt.
+- **Stop** a scan at any time and keep what it found. **Export** to CSV or JSON. Past scans are saved in
+  `webatlas.db` and listed in the sidebar.
+
+The console only listens on `127.0.0.1`, rejects requests addressed to other host names (DNS rebinding),
+accepts only JSON for actions (CSRF), sends a strict Content-Security-Policy, and shows text from crawled
+sites strictly as text.
+
+### Command line
+
+```bash
+webatlas crawl https://www.example.edu --depth 2 --max-pages 200 --max-time 300 --out results.json
+```
+
+Useful options: `--download` (hash documents with SHA-256 and drop duplicates), `--render` (headless browser
+for JavaScript-only pages), `--no-sitemap`, `--no-subdomains`, `--delay 1.0`, `--doc-checks 500`.
+Run `webatlas crawl --help` for all.
+
+### JavaScript-heavy sites (optional)
+
+```bash
+pip install -e ".[render]"
+playwright install chromium
+webatlas crawl https://www.example.edu --render
+```
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest          # runs against a fake website, no network access needed
+ruff check .
+```
+
+To try the crawler on a site running on your own machine, pass `--allow-private` to the CLI or set
+`WEBATLAS_ALLOW_PRIVATE=1` before `webatlas ui`. Both are off by default.
+
+## Responsible use
+
+Only scan sites you are allowed to scan. WebAtlas respects `robots.txt` and rate-limits itself by default;
+keep it that way when crawling sites you don't own.
+
+## Roadmap
+
+- [x] **Phase 1:** own crawler: robots.txt, sitemaps, document detection, SSRF guard, CLI, tests
+- [x] **Scan console:** live site map, scan settings, history, stop, CSV/JSON export
+- [ ] **Phase 2:** FastAPI backend, resumable background jobs, live progress (SSE), SQLAlchemy storage
+- [ ] **Phase 3:** document analysis: metadata leaks (authors, software, internal paths), emails, secrets
+- [ ] **Phase 4:** AI layer: local-LLM link prioritisation, document classification, RAG Q&A with citations
+- [ ] **Phase 5:** Docker Compose, benchmarks, demo
+
+## History
+
+v1 was built in August 2026 for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-verse),
+the Bright Data Scraper Studio hackathon, by team **Sunflowers** (Umang Agarwal and Aashvi Pandey). It used
+Bright Data's AI-generated collectors and their heal API. That version is preserved on the `main` branch.
 
 ## AI-use disclosure
 
-This project was built with the assistance of an AI coding assistant (Claude) for scaffolding the backend architecture, database schema, extraction logic, and frontend. All core design decisions — including the self-healing flow, the graph model, and the crawl strategy — were made and understood by the team, who can explain each part of the codebase and the reasoning behind it.
-
-## Scope & roadmap
-
-- Document *content* parsing (OCR, structured field extraction) is deliberately out of scope for v1 — the graph is a map of what exists, not an analysis of what's inside each file
-- Crawl depth and page count are capped for reliability and demo speed; both are configurable
-- Future direction: content-level extraction, cross-document entity linking, scheduled re-scans with diffing to surface what changed over time
+Built with the assistance of an AI coding assistant (Claude).
