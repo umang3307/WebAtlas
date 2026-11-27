@@ -273,6 +273,15 @@ def test_partial_results_are_saved_when_a_scan_crashes(tmp_path, site, monkeypat
             raise RuntimeError("simulated crash after finding pages")
 
     monkeypatch.setattr(Crawler, "_until_done_or_stopped", crash_after_work)
+    # Make saving slow so a scan that shows as finished before it's saved would be caught.
+    from webatlas.storage import ScanStore
+    real_finish = ScanStore.finish
+
+    def slow_finish(self, *args, **kwargs):
+        time.sleep(0.3)
+        return real_finish(self, *args, **kwargs)
+
+    monkeypatch.setattr(ScanStore, "finish", slow_finish)
     client = create_app(db_path=tmp_path / "s.db", allow_private=True, transport=site.transport()).test_client()
     scan_id = start(client).get_json()["id"]
     data = wait_done(client, scan_id)
