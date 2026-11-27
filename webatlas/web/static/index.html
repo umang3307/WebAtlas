@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebAtlas</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/atlas.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to scan</a>
+
+  <aside class="sidebar" aria-label="Scan history">
+    <div class="brand">
+      <span class="wordmark">WebAtlas</span>
+      <span class="version" id="version"></span>
+    </div>
+    <button class="btn btn-quiet new-scan" id="newScanBtn" type="button">New scan</button>
+    <h2 class="side-heading">Recent scans</h2>
+    <ul class="history" id="history" aria-live="polite"></ul>
+    <p class="history-empty" id="historyEmpty">Scans you run appear here.</p>
+  </aside>
+
+  <main id="main">
+    <!-- Scan form -->
+    <form class="scan-form" id="scanForm" novalidate>
+      <label class="visually-hidden" for="urlInput">Website address</label>
+      <div class="url-row">
+        <input id="urlInput" name="url" type="text" inputmode="url" autocomplete="url" spellcheck="false"
+               placeholder="www.example.edu" required>
+        <button class="btn btn-primary" id="startBtn" type="submit">Start scan</button>
+        <button class="btn btn-secondary" id="sectionsBtn" type="button">Choose sections…</button>
+      </div>
+      <p class="form-error" id="formError" role="alert"></p>
+
+      <div class="settings-row">
+        <fieldset class="presets" id="presets">
+          <legend class="visually-hidden">Scan size</legend>
+          <label><input type="radio" name="preset" value="quick"><span>Quick</span></label>
+          <label><input type="radio" name="preset" value="standard" checked><span>Standard</span></label>
+          <label><input type="radio" name="preset" value="deep"><span>Deep</span></label>
+          <label><input type="radio" name="preset" value="custom"><span>Custom</span></label>
+        </fieldset>
+        <p class="preset-summary" id="presetSummary"></p>
+        <button class="link-btn" id="settingsToggle" type="button" aria-expanded="false" aria-controls="settings">
+          Adjust settings
+        </button>
+      </div>
+
+      <div class="settings" id="settings" hidden>
+        <div class="settings-grid">
+          <label class="field"><span>Link depth</span>
+            <input type="number" id="max_depth" min="0" max="6" step="1">
+            <small>Hops away from the start pages</small></label>
+          <label class="field"><span>Page limit</span>
+            <input type="number" id="max_pages" min="1" max="5000" step="1">
+            <small>HTML pages to read</small></label>
+          <label class="field"><span>Time limit (minutes)</span>
+            <input type="number" id="max_minutes" min="1" max="120" step="1">
+            <small>Stops and keeps what it found</small></label>
+          <label class="field"><span>Files to confirm</span>
+            <input type="number" id="max_doc_checks" min="0" max="20000" step="10">
+            <small>More are listed unconfirmed</small></label>
+          <label class="field"><span>Delay per site (seconds)</span>
+            <input type="number" id="per_host_delay" min="0" max="10" step="0.1">
+            <small>Be gentle with small servers</small></label>
+          <label class="field"><span>Parallel requests</span>
+            <input type="number" id="concurrency" min="1" max="16" step="1">
+            <small>Across all hosts</small></label>
+        </div>
+        <div class="toggles">
+          <label class="toggle"><input type="checkbox" id="use_sitemaps"><span>Read the sitemap</span></label>
+          <label class="toggle"><input type="checkbox" id="include_subdomains"><span>Include subdomains</span></label>
+          <label class="toggle"><input type="checkbox" id="include_offsite_documents">
+            <span>Keep files hosted on other sites</span></label>
+          <label class="toggle"><input type="checkbox" id="download_documents">
+            <span>Download files to fingerprint them</span></label>
+          <label class="toggle" id="renderToggle"><input type="checkbox" id="render_js">
+            <span>Use a browser for JavaScript pages</span></label>
+        </div>
+      </div>
+    </form>
+
+    <!-- Section picker -->
+    <section class="sections" id="sectionsPanel" hidden aria-labelledby="sectionsTitle">
+      <div class="sections-head">
+        <h2 id="sectionsTitle" tabindex="-1">Choose where to start</h2>
+        <p id="sectionsNote"></p>
+      </div>
+      <div class="sections-tools">
+        <button class="link-btn" type="button" id="sectionsAll">Select all</button>
+        <button class="link-btn" type="button" id="sectionsNone">Clear</button>
+      </div>
+      <ul class="sections-list" id="sectionsList"></ul>
+      <div class="sections-actions">
+        <button class="btn btn-primary" type="button" id="sectionsStart">Scan selected sections</button>
+        <button class="btn btn-quiet" type="button" id="sectionsCancel">Cancel</button>
+      </div>
+    </section>
+
+    <!-- Workspace -->
+    <section class="workspace" id="workspace" aria-label="Scan results">
+      <header class="scan-head" id="scanHead" hidden>
+        <div class="scan-title">
+          <h1 id="scanHost"></h1>
+          <p class="scan-meta"><span class="status" id="scanStatus"></span><span id="scanWhen"></span></p>
+        </div>
+        <div class="scan-actions">
+          <button class="btn btn-danger" id="stopBtn" type="button" hidden>Stop scan</button>
+          <a class="btn btn-secondary" id="exportCsv" download>Export CSV</a>
+          <a class="btn btn-secondary" id="exportJson" download>Export JSON</a>
+          <button class="btn btn-quiet" id="deleteBtn" type="button">Delete</button>
+        </div>
+      </header>
+
+      <dl class="stats" id="stats" hidden>
+        <div><dt>Documents</dt><dd id="statDocs">0</dd></div>
+        <div><dt>Pages read</dt><dd><span id="statPages">0</span><span class="of" id="statPagesOf"></span></dd></div>
+        <div><dt>Issues</dt><dd id="statIssues">0</dd></div>
+        <div><dt>Requests</dt><dd id="statRequests">0</dd></div>
+        <div><dt>Time</dt><dd id="statTime">0s</dd></div>
+      </dl>
+      <div class="progress" id="progress" hidden><div class="progress-bar" id="progressBar"></div></div>
+      <p class="stopped-note" id="stoppedNote" hidden></p>
+
+      <div class="panes">
+        <figure class="atlas" id="atlasWrap">
+          <canvas id="atlas" role="img" aria-label="Map of the site: pages on depth rings, documents as markers"></canvas>
+          <figcaption class="atlas-caption" id="atlasCaption">
+            <span class="legend"><i class="lg-page"></i>Page</span>
+            <span class="legend"><i class="lg-doc"></i>Document</span>
+            <span class="legend"><i class="lg-ring"></i>Link depth</span>
+          </figcaption>
+          <div class="atlas-tools">
+            <button class="icon-btn" id="zoomIn" type="button" aria-label="Zoom in">+</button>
+            <button class="icon-btn" id="zoomOut" type="button" aria-label="Zoom out">−</button>
+            <button class="icon-btn fit" id="zoomFit" type="button" aria-label="Fit map to view">Fit</button>
+          </div>
+          <div class="tooltip" id="tooltip" role="status" hidden></div>
+          <div class="atlas-empty" id="atlasEmpty">
+            <p class="lead">Map every public document on a website.</p>
+            <p>Enter an address above. WebAtlas reads robots.txt and the sitemap, follows links,
+               and confirms each file from the server's response.</p>
+            <p class="fine">Only scan sites you're allowed to scan.</p>
+          </div>
+        </figure>
+
+        <div class="results" id="results" hidden>
+          <div class="tabs" role="tablist" aria-label="Result views">
+            <button role="tab" id="tab-documents" aria-controls="panel-documents" aria-selected="true">
+              Documents <span class="count" id="countDocs">0</span></button>
+            <button role="tab" id="tab-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">
+              Pages <span class="count" id="countPages">0</span></button>
+            <button role="tab" id="tab-issues" aria-controls="panel-issues" aria-selected="false" tabindex="-1">
+              Issues <span class="count" id="countIssues">0</span></button>
+            <button role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
+              Activity</button>
+          </div>
+
+          <div role="tabpanel" id="panel-documents" aria-labelledby="tab-documents" class="panel">
+            <div class="filters">
+              <label class="visually-hidden" for="docSearch">Search documents</label>
+              <input type="search" id="docSearch" placeholder="Search titles and addresses">
+              <div class="chips" id="typeChips" role="group" aria-label="Filter by file type"></div>
+            </div>
+            <p class="filter-note" id="pageFilterNote" hidden>
+              Showing files found on <strong id="pageFilterName"></strong>.
+              <button class="link-btn" type="button" id="clearPageFilter">Show all</button>
+            </p>
+            <div class="table-wrap">
+              <table class="table docs">
+                <thead><tr><th scope="col">Type</th><th scope="col">Document</th>
+                  <th scope="col">Found on</th><th scope="col">Confirmed by</th></tr></thead>
+                <tbody id="docRows"></tbody>
+              </table>
+              <p class="table-empty" id="docEmpty"></p>
+              <button class="btn btn-quiet more" id="docMore" type="button" hidden>Show more</button>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-pages" aria-labelledby="tab-pages" class="panel" hidden>
+            <div class="table-wrap">
+              <table class="table pages">
+                <thead><tr><th scope="col">Page</th><th scope="col">Depth</th>
+                  <th scope="col">Links</th><th scope="col">Files</th></tr></thead>
+                <tbody id="pageRows"></tbody>
+              </table>
+              <p class="table-empty" id="pageEmpty"></p>
+              <button class="btn btn-quiet more" id="pageMore" type="button" hidden>Show more</button>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-issues" aria-labelledby="tab-issues" class="panel" hidden>
+            <div class="table-wrap">
+              <table class="table issues">
+                <thead><tr><th scope="col">Address</th><th scope="col">What happened</th></tr></thead>
+                <tbody id="issueRows"></tbody>
+              </table>
+              <p class="table-empty" id="issueEmpty"></p>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" class="panel" hidden>
+            <ol class="activity" id="activity"></ol>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
