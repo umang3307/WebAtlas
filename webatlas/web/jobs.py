@@ -8,12 +8,13 @@ so each poll only carries what's new.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -22,6 +23,8 @@ from webatlas.crawler import Crawler
 from webatlas.models import CrawlResult
 from webatlas.safety import Resolver, default_resolver
 from webatlas.storage import ScanStore
+
+log = logging.getLogger("webatlas.web")
 
 MAX_EVENTS = 4000          # activity feed entries kept per scan
 MAX_RUNNING = 3            # scans allowed at the same time
@@ -49,7 +52,7 @@ BOOL_SETTINGS = ("use_sitemaps", "include_subdomains", "include_offsite_document
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def clean_settings(raw: dict) -> dict:
@@ -118,7 +121,8 @@ class ScanJob:
         if event["type"] == "failure":
             self.issues.append({"url": event["url"], "reason": event["reason"], "kind": "failure"})
         elif event["type"] == "skipped":
-            self.issues.append({"url": event["url"], "reason": "Blocked by robots.txt", "kind": "robots"})
+            self.issues.append({"url": event["url"], "reason": event.get("reason") or "Blocked by robots.txt",
+                                "kind": "robots"})
         event = {**event, "t": round(self.elapsed, 1)}
         self.events.append(event)
         if len(self.events) > MAX_EVENTS:
@@ -147,31 +151,44 @@ class ScanManager:
                 self.jobs.pop(old.id, None)
 
     def start(self, target: str, seeds: list[str], settings: dict) -> ScanJob:
+        # The whole check-and-register step holds the lock, so two "Start" clicks arriving at
+        # the same moment can't both slip under the running-scan limit.
         with self._lock:
             running = sum(1 for j in self.jobs.values() if j.status == "running")
             if running >= MAX_RUNNING:
                 raise TooManyScans(f"{running} scans are already running; stop one or wait for it to finish")
             self._evict_finished()
-        job = ScanJob(id=uuid.uuid4().hex[:12], target=target, seeds=seeds or [target], settings=settings)
-        config = CrawlConfig(allow_private_networks=self.allow_private, **settings)
-        job.crawler = Crawler(config, transport=self.transport, resolver=self.resolver, on_event=job.add_event)
-        self.store.create(job.id, target, {**settings, "seeds": job.seeds}, job.started_at)
-        self.jobs[job.id] = job
+            job = ScanJob(id=uuid.uuid4().hex[:12], target=target, seeds=seeds or [target], settings=settings)
+            config = CrawlConfig(allow_private_networks=self.allow_private, **settings)
+            job.crawler = Crawler(config, transport=self.transport, resolver=self.resolver,
+                                  on_event=job.add_event)
+            self.store.create(job.id, target, {**settings, "seeds": job.seeds}, job.started_at)
+            self.jobs[job.id] = job
         job.thread = threading.Thread(target=self._run, args=(job,), daemon=True, name=f"scan-{job.id}")
         job.thread.start()
         return job
 
     def _run(self, job: ScanJob) -> None:
-        result_dict = None
+        error = ""
         try:
             result = asyncio.run(job.crawler.crawl(job.seeds))
-            job.status = "stopped" if result.stopped_early == "stopped by user" else "done"
-            result_dict = result.to_dict()
+            status = "stopped" if result.stopped_early == "stopped by user" else "done"
         except Exception as exc:
-            job.status, job.error = "error", f"{type(exc).__name__}: {exc}"
+            status, error = "error", f"{type(exc).__name__}: {exc}"
+            log.exception("scan %s failed", job.id)
         job.finished_mono = time.monotonic()
-        summary = summarize(job.crawler.result, job.elapsed) if job.crawler.result else {}
-        self.store.finish(job.id, job.status, summary, result_dict, job.error or None, _now())
+        # Save first, announce second: the scan only shows as finished once its results are in the
+        # database, so a reload or restart can never catch it half-saved. Partial results are kept.
+        partial = job.crawler.result
+        summary = summarize(partial, job.elapsed) if partial else {}
+        try:
+            self.store.finish(job.id, status, summary, partial.to_dict() if partial else None,
+                              error or None, _now())
+        except Exception as exc:   # e.g. disk full: keep the in-memory copy and say so
+            error = (error + "; " if error else "") + f"results could not be saved to the database: {exc}"
+            log.exception("saving scan %s failed", job.id)
+        job.error = error
+        job.status = status
 
     def stop(self, scan_id: str) -> bool:
         job = self.jobs.get(scan_id)

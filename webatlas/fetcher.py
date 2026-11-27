@@ -11,17 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from webatlas.config import CrawlConfig
-from webatlas.safety import Resolver, check_host, default_resolver
+from webatlas.safety import Resolver, UnsafeTargetError, check_host, default_resolver, is_public_ip
 from webatlas.urls import host_of, is_http_url
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
+# Errors worth retrying: the network or server hiccuped. Anything else (bad gzip data, an invalid
+# URL, an unsupported scheme) will fail the same way again, so it's reported at once.
+RETRYABLE_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 
 
 @dataclass
@@ -41,15 +45,20 @@ class FetchResult:
     def ok(self) -> bool:
         return 200 <= self.status < 300
 
-    def text(self) -> str:
-        charset = "utf-8"
+    @property
+    def charset(self) -> str | None:
+        """The charset declared in the Content-Type header, if any. When it's missing, HTML
+        parsing sniffs the page's own <meta charset> instead of assuming UTF-8."""
         for part in self.headers.get("content-type", "").split(";")[1:]:
             key, _, value = part.strip().partition("=")
-            if key.lower() == "charset" and value:
-                charset = value.strip("\"'")
+            if key.lower() == "charset" and value.strip("\"' "):
+                return value.strip("\"' ")
+        return None
+
+    def text(self) -> str:
         try:
-            return self.body.decode(charset, errors="replace")
-        except LookupError:
+            return self.body.decode(self.charset or "utf-8", errors="replace")
+        except LookupError:   # unknown charset name
             return self.body.decode("utf-8", errors="replace")
 
 
@@ -128,9 +137,8 @@ class Fetcher:
             return
         host = host_of(url)
         if host not in self._checked_hosts:
-            # Note: this checks DNS before the request; a hostile DNS server could still
-            # change its answer in between ("DNS rebinding"). Fine for a crawler, but the
-            # Phase 2 API should also run behind a network egress policy.
+            # DNS could change between this lookup and the connection ("DNS rebinding");
+            # _check_peer verifies the address actually connected to as well.
             await check_host(host, self.resolver)
             self._checked_hosts.add(host)
 
@@ -142,7 +150,10 @@ class Fetcher:
             await self.guard(current)
             result = await self._send_with_retries(method, current, max_bytes)
             if result.status in (301, 302, 303, 307, 308) and "location" in result.headers:
-                current = urljoin(current, result.headers["location"])
+                try:
+                    current = urljoin(current, result.headers["location"])
+                except ValueError as exc:   # e.g. "Location: http://[::1"
+                    raise FetchError(f"invalid redirect target from {current}: {exc}") from exc
                 if result.status == 303:
                     method = "GET"
                 continue
@@ -153,23 +164,52 @@ class Fetcher:
 
     async def _send_with_retries(self, method: str, url: str, max_bytes: int) -> FetchResult:
         last_error: Exception | None = None
-        for attempt in range(self.config.retries + 1):
+        attempts = self.config.retries + 1
+        for attempt in range(attempts):
+            final_attempt = attempt == attempts - 1
             await self.throttle.wait(host_of(url))
             try:
                 result = await self._send_once(method, url, max_bytes)
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
+            except RETRYABLE_ERRORS as exc:
                 last_error = exc
-                await asyncio.sleep(min(2**attempt, 10))
+                if not final_attempt:   # no point waiting after the last try
+                    await asyncio.sleep(min(2**attempt, 10))
                 continue
-            if result.status in RETRY_STATUSES and attempt < self.config.retries:
+            except httpx.HTTPError as exc:
+                raise FetchError(f"{type(exc).__name__}: {exc}") from exc
+            if result.status in RETRY_STATUSES and not final_attempt:
                 await asyncio.sleep(_retry_after_seconds(result.headers, min(2**attempt, 10)))
                 continue
             return result
         raise FetchError(f"{type(last_error).__name__}: {last_error}" if last_error else "request failed")
 
+    def _uses_proxy(self, url: str) -> bool:
+        """Whether httpx will send this request through a proxy from the environment
+        (HTTPS_PROXY / HTTP_PROXY / ALL_PROXY, minus NO_PROXY)."""
+        proxies = urllib.request.getproxies_environment()
+        parts = urlsplit(url)
+        if not (proxies.get(parts.scheme) or proxies.get("all")):
+            return False
+        return not urllib.request.proxy_bypass_environment(parts.hostname or "", proxies)
+
+    def _check_peer(self, url: str, response: httpx.Response) -> None:
+        """Second SSRF check, after connecting: the address the socket actually reached must be
+        public too. This closes the gap where DNS answers differently for the guard's lookup and
+        the real connection ("DNS rebinding"). Skipped through a proxy, which does the connecting."""
+        if self.config.allow_private_networks or self._uses_proxy(url):
+            return
+        stream = response.extensions.get("network_stream")
+        if stream is None:   # in-memory test transports have no socket
+            return
+        peer = stream.get_extra_info("server_addr")
+        if peer and not is_public_ip(peer[0]):
+            raise UnsafeTargetError(
+                f"{host_of(url)} connected to non-public address {peer[0]} (its DNS answer changed)")
+
     async def _send_once(self, method: str, url: str, max_bytes: int) -> FetchResult:
         self.requests_made += 1
         async with self._client.stream(method, url) as response:
+            self._check_peer(url, response)   # before reading a single byte of the body
             body = bytearray()
             truncated = False
             if method != "HEAD":

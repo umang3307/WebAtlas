@@ -60,6 +60,7 @@
       this.selected = null;       // selected page url
       this.hover = null;
       this.flashUntil = new Map();
+      this.lastFlashEnd = 0;      // latest flash end time, so frames don't scan every node
       this.userMoved = false;
       this.view = { x: 0, y: 0, k: 1 };
       this.idle = !rootUrl;
@@ -102,6 +103,7 @@
         this.pages.set(p.url, node);
         this.maxDepth = Math.max(this.maxDepth, node.depth);
         this.flashUntil.set(p.url, performance.now() + 1400);
+        this.lastFlashEnd = performance.now() + 1400;
       }
       if (pages.length) { this.idle = false; this._layout(); }
     }
@@ -310,8 +312,7 @@
         if (!moving) this._animating = false;
       }
       this._draw();
-      const flashing = [...this.flashUntil.values()].some((t) => t > performance.now());
-      if (moving || flashing) this._requestDraw();
+      if (moving || this.lastFlashEnd > performance.now()) this._requestDraw();
     }
 
     _draw() {
