@@ -46,6 +46,8 @@ def crawl(
     subdomains: bool = typer.Option(True, "--subdomains/--no-subdomains", help="Include subdomains."),
     download: bool = typer.Option(False, "--download", help="Download documents to hash and dedupe them."),
     render: bool = typer.Option(False, "--render", help="Use a headless browser for JavaScript-only pages."),
+    max_time: float | None = typer.Option(None, "--max-time", help="Stop after this many seconds, keep results."),
+    doc_checks: int = typer.Option(1000, "--doc-checks", help="Documents to confirm with a request."),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write full results to this JSON file."),
     allow_private: bool = typer.Option(False, "--allow-private", help="Allow localhost/private IPs (testing)."),
 ) -> None:
@@ -53,7 +55,7 @@ def crawl(
     config = CrawlConfig(
         max_depth=depth, max_pages=max_pages, concurrency=concurrency, per_host_delay=delay,
         use_sitemaps=sitemap, include_subdomains=subdomains, download_documents=download,
-        render_js=render, allow_private_networks=allow_private,
+        render_js=render, allow_private_networks=allow_private, max_duration=max_time, max_doc_checks=doc_checks,
     )
 
     progress = Progress(
@@ -89,8 +91,11 @@ def _print_summary(result) -> None:
     console.print(
         f"\n[bold]Crawled {len(result.pages)} pages[/bold], found [bold green]{len(result.documents)} "
         f"documents[/bold green] ({len(result.failures)} failures, "
-        f"{len(result.skipped_by_robots)} skipped by robots.txt, {result.sitemap_urls} URLs from sitemaps)"
+        f"{len(result.skipped_by_robots)} skipped by robots.txt, {result.sitemap_urls} URLs from sitemaps, "
+        f"{result.requests} requests)"
     )
+    if result.stopped_early:
+        console.print(f"[yellow]Stopped early: {result.stopped_early}. Results so far are shown.[/yellow]")
     if result.failures and (not result.pages or len(result.failures) <= 5):
         for failure in result.failures[:5]:
             console.print(f"  [yellow]![/yellow] {failure.url}: {failure.reason}")

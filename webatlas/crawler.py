@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -86,6 +87,8 @@ class Crawler:
         self._pages_reserved = 0
         self._renderer: Renderer | None = None
         self._render_ok = cfg.render_js
+        self._doc_checks = 0
+        self._deadline = time.monotonic() + cfg.max_duration if cfg.max_duration else None
 
         async with Fetcher(cfg, transport=self.transport, resolver=self.resolver) as fetcher:
             self.fetcher = fetcher
@@ -107,6 +110,7 @@ class Crawler:
                 if self._renderer:
                     await self._renderer.close()
 
+        self.result.requests = fetcher.requests_made
         self.result.finished_at = _now()
         self._emit("done", pages=len(self.result.pages), documents=len(self.result.documents),
                    failures=len(self.result.failures))
@@ -144,10 +148,20 @@ class Crawler:
         self.result.sitemap_urls = count
         self._emit("info", message=f"sitemap listed {count} in-scope URLs")
 
+    def _out_of_time(self) -> bool:
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            if not self.result.stopped_early:
+                self.result.stopped_early = f"time limit ({self.config.max_duration:g} s) reached"
+                self._emit("info", message=f"stopping: {self.result.stopped_early}")
+            return True
+        return False
+
     async def _worker(self) -> None:
         while True:
             item = await self._queue.get()
             try:
+                if self._out_of_time():
+                    continue   # drain the queue quickly; finally: still marks the item done
                 if item.kind == PAGE:
                     await self._process_page(item)
                 else:
@@ -249,6 +263,12 @@ class Crawler:
             self._emit("skipped", url=item.url, reason="robots.txt")
             return
 
+        if self._doc_checks >= cfg.max_doc_checks:
+            # Budget for confirming documents is used up: list it from the link alone.
+            self._record_unverified(item)
+            return
+        self._doc_checks += 1
+
         if cfg.download_documents:
             response = await self.fetcher.get(item.url, max_bytes=cfg.max_document_bytes)
         else:
@@ -306,6 +326,18 @@ class Crawler:
         self.result.documents.append(document)
         self._emit("document", url=final, title=document.title, doc_type=doc_type,
                    detected_by=detected_by, documents_done=len(self.result.documents))
+
+    def _record_unverified(self, item: _Item) -> None:
+        key = f"url:{item.url}"
+        if key in self._doc_keys or len(self.result.documents) >= self.config.max_documents:
+            return
+        self._doc_keys.add(key)
+        document = Document(url=item.url, final_url=item.url, title=item.link_text or file_name(item.url),
+                            source_page=item.source_page, doc_type=doc_type_from_url(item.url) or "unknown",
+                            detected_by="extension-unverified")
+        self.result.documents.append(document)
+        self._emit("document", url=item.url, title=document.title, doc_type=document.doc_type,
+                   detected_by=document.detected_by, documents_done=len(self.result.documents))
 
     # ------------------------------------------------------------------ helpers
 

@@ -13,6 +13,9 @@ class CrawlConfig:
     max_depth: int = 2            # link hops away from a seed page
     max_pages: int = 100          # HTML pages fetched (documents don't count)
     max_documents: int = 5000     # stop recording documents after this many
+    max_doc_checks: int = 1000    # documents confirmed with a request; beyond this they're listed
+                                  # from their link alone and marked "extension-unverified"
+    max_duration: float | None = None  # seconds; when reached, stop and return what was found so far
 
     # Politeness.
     concurrency: int = 4          # pages fetched at the same time (across all hosts)

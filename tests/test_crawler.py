@@ -143,3 +143,39 @@ async def test_discover_sections_lists_homepage_links():
     assert not any("other.test" in s for s in sections)
     assert "http://college.test/private/staff" not in sections   # blocked by robots.txt
     assert docs == ["https://cdn.test/files/brochure.pdf"]
+
+
+async def test_doc_check_budget_lists_remaining_documents_unverified():
+    site = FakeSite()
+    result, _ = await run(site, max_doc_checks=2)
+    unverified = [d for d in result.documents if d.detected_by == "extension-unverified"]
+    assert unverified, "documents past the budget should still be listed"
+    # Unverified documents were never requested.
+    assert not any(site.fetched(d.url) for d in unverified)
+    # 2 checked doc links + /download.php?id=5 (found as a page, so it costs no doc check).
+    assert sum(1 for d in result.documents if d.detected_by != "extension-unverified") <= 3
+
+
+async def test_time_limit_returns_partial_results():
+    import asyncio as _asyncio
+
+    import httpx
+
+    def slow_handler(request):
+        return FakeSite().handler(request)
+
+    class SlowTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await _asyncio.sleep(0.2)
+            return slow_handler(request)
+
+    cfg = config(max_duration=0.5, concurrency=1)
+    result = await Crawler(cfg, transport=SlowTransport()).crawl([ROOT])
+    assert result.stopped_early.startswith("time limit")
+    assert len(result.pages) < 5
+    assert result.finished_at
+
+
+async def test_counts_requests():
+    result, _ = await run(FakeSite())
+    assert result.requests > len(result.pages)
