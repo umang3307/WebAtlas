@@ -87,6 +87,34 @@ def crawl(
         console.print(f"\nFull results written to [bold]{out}[/bold]")
 
 
+@app.command()
+def ui(
+    port: int = typer.Option(5000, "--port", "-p", help="Port for the web interface."),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the interface in your browser."),
+    db: Path = typer.Option(Path("webatlas.db"), "--db", help="SQLite file for scan history."),
+) -> None:
+    """Open the scan console in your browser."""
+    import threading
+    import webbrowser
+
+    from werkzeug.serving import make_server
+
+    from webatlas.web import create_app
+
+    flask_app = create_app(db_path=db)
+    # Bound to 127.0.0.1 on purpose: the console can start crawls, so it must not be reachable
+    # from other machines. Werkzeug's threaded server is fine for one local user.
+    server = make_server("127.0.0.1", port, flask_app, threaded=True)
+    url = f"http://127.0.0.1:{port}"
+    console.print(f"WebAtlas console running at [bold]{url}[/bold]  (Ctrl+C to stop)")
+    if open_browser:
+        threading.Timer(0.6, webbrowser.open, args=(url,)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("Stopped.")
+
+
 def _print_summary(result) -> None:
     console.print(
         f"\n[bold]Crawled {len(result.pages)} pages[/bold], found [bold green]{len(result.documents)} "
