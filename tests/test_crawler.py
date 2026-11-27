@@ -179,3 +179,23 @@ async def test_time_limit_returns_partial_results():
 async def test_counts_requests():
     result, _ = await run(FakeSite())
     assert result.requests > len(result.pages)
+
+
+async def test_all_limits_can_be_lifted():
+    result, _ = await run(FakeSite(), max_depth=None, max_pages=None, max_doc_checks=None,
+                          max_documents=None, max_sitemap_urls=None)
+    assert "http://college.test/tenders/t-2023.xlsx" in doc_urls(result)
+    assert not result.stopped_early
+
+
+async def test_crawler_traps_are_skipped():
+    site = FakeSite()
+    # A page whose relative link resolves deeper every time: /loop/a/ -> /loop/a/a/ -> ...
+    site.routes["http://college.test/"] = (200, {"content-type": "text/html"}, b'<a href="/loop/a/">loop</a>')
+    for depth in range(1, 12):
+        url = "http://college.test/loop/" + "a/" * depth
+        site.routes[url] = (200, {"content-type": "text/html"}, b'<a href="a/">deeper</a>')
+    result, _ = await run(site, max_depth=None, max_pages=None, use_sitemaps=False)
+    deepest = max(p.url.count("/a") for p in result.pages)
+    assert deepest <= 3
+    assert any("crawler trap" in f.reason for f in result.failures)

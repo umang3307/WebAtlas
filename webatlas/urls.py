@@ -113,3 +113,28 @@ def file_name(url: str) -> str:
     """Last path segment, used as a fallback document title."""
     path = urlsplit(url).path.rstrip("/")
     return path.rsplit("/", 1)[-1] or url
+
+
+MAX_URL_LENGTH = 2048
+MAX_SEGMENT_REPEATS = 3
+
+
+def looks_like_trap(url: str) -> bool:
+    """Heuristics for crawler traps: URLs that never stop generating new pages.
+
+    - very long URLs (session IDs piling up, query strings growing on every click)
+    - the same path segment repeated over and over (/a/b/a/b/a/b/...), which happens
+      when a site uses relative links that resolve to ever-deeper paths
+    """
+    if len(url) > MAX_URL_LENGTH:
+        return True
+    try:
+        segments = [seg for seg in urlsplit(url).path.split("/") if seg]
+    except ValueError:
+        return True
+    counts: dict[str, int] = {}
+    for seg in segments:
+        counts[seg] = counts.get(seg, 0) + 1
+        if counts[seg] > MAX_SEGMENT_REPEATS:
+            return True
+    return False

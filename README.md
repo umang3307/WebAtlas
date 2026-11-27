@@ -64,6 +64,8 @@ That opens the scan console at `http://127.0.0.1:5000`.
 
 - **Start a scan** from an address, or click **Choose sections…** to pick which parts of the site to start from.
 - **Pick a size:** Quick, Standard or Deep, or adjust depth, page limit, time limit, request delay and more.
+  Tick **No limit** on depth, pages, time or file confirmation for a full crawl; the console warns you
+  first, and Stop always keeps what was found.
 - **Watch it live.** The map places the start page at the centre and pages on rings by link depth, one slice per
   site section; documents appear around the page that links to them. Click a page to see only its files.
 - **Explore the results:** search, filter by file type, see where each file was found and how it was confirmed,
@@ -84,6 +86,14 @@ webatlas crawl https://www.example.edu --depth 2 --max-pages 200 --max-time 300 
 Useful options: `--download` (hash documents with SHA-256 and drop duplicates), `--render` (headless browser
 for JavaScript-only pages), `--no-sitemap`, `--no-subdomains`, `--delay 1.0`, `--doc-checks 500`.
 Run `webatlas crawl --help` for all.
+
+### Limits
+
+The defaults (depth 2, 100 pages, 1,000 confirmed files) keep an accidental scan of a huge site short.
+Every one of them can be lifted: pass `0` for `--max-pages`, `--max-time` or `--doc-checks`, or use
+`--unlimited` to lift them all, including depth. Press Ctrl+C once to stop and keep the results.
+Politeness settings (delay per host, parallel requests, robots.txt) always apply, and crawler traps such as
+endlessly repeating paths are skipped automatically.
 
 ### JavaScript-heavy sites (optional)
 

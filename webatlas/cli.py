@@ -39,31 +39,40 @@ def version() -> None:
 def crawl(
     url: list[str] = typer.Argument(..., help="One or more start URLs on the same site."),
     depth: int = typer.Option(2, "--depth", "-d", help="Link hops to follow from the start URLs."),
-    max_pages: int = typer.Option(100, "--max-pages", "-n", help="Maximum HTML pages to fetch."),
+    max_pages: int = typer.Option(100, "--max-pages", "-n", help="Maximum HTML pages to fetch (0 = no limit)."),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Requests in flight at once."),
     delay: float = typer.Option(0.5, "--delay", help="Minimum seconds between requests to one host."),
     sitemap: bool = typer.Option(True, "--sitemap/--no-sitemap", help="Read sitemap.xml."),
     subdomains: bool = typer.Option(True, "--subdomains/--no-subdomains", help="Include subdomains."),
     download: bool = typer.Option(False, "--download", help="Download documents to hash and dedupe them."),
     render: bool = typer.Option(False, "--render", help="Use a headless browser for JavaScript-only pages."),
-    max_time: float | None = typer.Option(None, "--max-time", help="Stop after this many seconds, keep results."),
-    doc_checks: int = typer.Option(1000, "--doc-checks", help="Documents to confirm with a request."),
+    max_time: float = typer.Option(0, "--max-time", help="Stop after N seconds, keep results (0 = no limit)."),
+    doc_checks: int = typer.Option(1000, "--doc-checks", help="Documents to confirm with a request (0 = no limit)."),
+    unlimited: bool = typer.Option(False, "--unlimited", help="Lift depth, page, time and confirmation limits."),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write full results to this JSON file."),
     allow_private: bool = typer.Option(False, "--allow-private", help="Allow localhost/private IPs (testing)."),
 ) -> None:
     """Crawl a site and list every document it links to."""
+    no_limit = lambda n: None if unlimited or n <= 0 else n  # noqa: E731
     config = CrawlConfig(
-        max_depth=depth, max_pages=max_pages, concurrency=concurrency, per_host_delay=delay,
+        max_depth=None if unlimited else depth, max_pages=no_limit(max_pages),
+        max_duration=no_limit(max_time), max_doc_checks=no_limit(doc_checks),
+        concurrency=concurrency, per_host_delay=delay,
         use_sitemaps=sitemap, include_subdomains=subdomains, download_documents=download,
-        render_js=render, allow_private_networks=allow_private, max_duration=max_time, max_doc_checks=doc_checks,
+        render_js=render, allow_private_networks=allow_private,
     )
+    lifted = [name for name, value in (("depth", config.max_depth), ("pages", config.max_pages),
+                                       ("time", config.max_duration)) if value is None]
+    if lifted:
+        console.print(f"[yellow]No {', '.join(lifted)} limit: on a large site this can run for hours. "
+                      "Press Ctrl+C to stop; results found so far are kept.[/yellow]")
 
     progress = Progress(
         TextColumn("[bold cyan]{task.description}"), BarColumn(), MofNCompleteColumn(),
         TextColumn("docs: [green]{task.fields[docs]}"), TimeElapsedColumn(),
         console=console, transient=True,
     )
-    task = progress.add_task("Crawling", total=max_pages, docs=0)
+    task = progress.add_task("Crawling", total=config.max_pages, docs=0)   # None = open-ended bar
 
     def on_event(event: dict) -> None:
         kind = event["type"]
@@ -74,9 +83,10 @@ def crawl(
         elif kind == "info":
             progress.console.print(f"[dim]{event['message']}[/dim]")
 
+    crawler = Crawler(config, on_event=on_event)
     try:
         with progress:
-            result = asyncio.run(Crawler(config, on_event=on_event).crawl(url))
+            result = _run_stoppable(crawler, url)
     except (UnsafeTargetError, ValueError) as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -113,6 +123,37 @@ def ui(
         server.serve_forever()
     except KeyboardInterrupt:
         console.print("Stopped.")
+
+
+def _run_stoppable(crawler: Crawler, seeds: list[str]):
+    """Run the crawl in a worker thread so Ctrl+C can stop it gracefully on every OS:
+    the first Ctrl+C asks the crawler to finish and keeps its results, a second one quits."""
+    import threading
+
+    box: dict = {}
+
+    def work() -> None:
+        try:
+            box["result"] = asyncio.run(crawler.crawl(seeds))
+        except BaseException as exc:  # handed back to the main thread below
+            box["error"] = exc
+
+    thread = threading.Thread(target=work, name="webatlas-crawl", daemon=True)
+    thread.start()
+    try:
+        while thread.is_alive():
+            thread.join(0.25)
+    except KeyboardInterrupt:
+        console.print("[yellow]Stopping... (press Ctrl+C again to quit without results)[/yellow]")
+        crawler.request_stop()
+        try:
+            while thread.is_alive():
+                thread.join(0.25)
+        except KeyboardInterrupt:
+            raise typer.Exit(code=130) from None
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 def _print_summary(result) -> None:

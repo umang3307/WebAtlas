@@ -13,6 +13,8 @@
     standard: { max_depth: 2, max_pages: 100, max_minutes: 10, max_doc_checks: 1000 },
     deep: { max_depth: 3, max_pages: 500, max_minutes: 30, max_doc_checks: 5000 },
   };
+  // Limits that can be switched off with their "No limit" box (sent to the server as null).
+  const LIFTABLE = ["max_depth", "max_pages", "max_minutes", "max_doc_checks"];
   const NUMBER_FIELDS = ["max_depth", "max_pages", "max_minutes", "max_doc_checks", "per_host_delay", "concurrency"];
   const BOOL_FIELDS = ["use_sitemaps", "include_subdomains", "include_offsite_documents", "download_documents",
     "render_js"];
@@ -146,31 +148,54 @@
 
   /* ---------------------------------------------------------------- settings */
 
+  function lifted(f) { return LIFTABLE.includes(f) && $(`${f}_off`).checked; }
+
   function readSettings() {
     const v = (id) => $(id).value;
     const s = {};
     for (const f of NUMBER_FIELDS) {
+      if (lifted(f)) { s[f] = null; continue; }
       const n = Number(v(f));
       if (v(f) !== "" && Number.isFinite(n)) s[f] = n;
     }
     for (const f of BOOL_FIELDS) s[f] = $(f).checked;
-    const out = { ...s, max_duration: (s.max_minutes || 10) * 60 };
+    const out = { ...s, max_duration: s.max_minutes === null ? null : (s.max_minutes || 10) * 60 };
     delete out.max_minutes;
     return out;
   }
 
+  function syncLimitInputs() {
+    for (const f of LIFTABLE) $(f).disabled = lifted(f);
+    const s = readSettings();
+    const warn = [];
+    if (s.max_depth === null || s.max_pages === null) {
+      warn.push("Without a depth or page limit, a large site can mean thousands of pages and hours of crawling.");
+    }
+    if (s.max_duration === null) warn.push("With no time limit, the scan runs until it's finished or you stop it.");
+    if (s.max_doc_checks === null) warn.push("Every file is confirmed with its own request, which slows big scans.");
+    if (warn.length) warn.push("Requests stay polite, and Stop keeps everything found so far.");
+    $("limitWarning").textContent = warn.join(" ");
+    $("limitWarning").hidden = warn.length === 0;
+  }
+
   function applyPreset(name) {
     const p = PRESETS[name];
-    if (p) for (const [k, v] of Object.entries(p)) $(k).value = v;
+    if (!p) return;
+    for (const [k, v] of Object.entries(p)) $(k).value = v;
+    for (const f of LIFTABLE) $(`${f}_off`).checked = false;
+    syncLimitInputs();
     updatePresetSummary();
   }
 
   function updatePresetSummary() {
     const s = readSettings();
-    const depth = s.max_depth === 0 ? "Reads only the start pages" :
+    const depth = s.max_depth === null ? "Follows every link on the site" :
+      s.max_depth === 0 ? "Reads only the start pages" :
       `Follows links ${s.max_depth} ${s.max_depth === 1 ? "step" : "steps"} deep`;
-    $("presetSummary").textContent =
-      `${depth}, reads up to ${fmt(s.max_pages)} pages, stops after ${Math.round(s.max_duration / 60)} minutes.`;
+    const pages = s.max_pages === null ? "reads every page it finds" : `reads up to ${fmt(s.max_pages)} pages`;
+    const time = s.max_duration === null ? "runs until it's done or you stop it" :
+      `stops after ${Math.round(s.max_duration / 60)} minutes`;
+    $("presetSummary").textContent = `${depth}, ${pages}, ${time}.`;
   }
 
   function saveSettings() {
@@ -178,7 +203,8 @@
     const values = {};
     for (const f of NUMBER_FIELDS) values[f] = $(f).value;
     for (const f of BOOL_FIELDS) values[f] = $(f).checked;
-    store("webatlas.settings", { preset, values });
+    const off = LIFTABLE.filter(lifted);
+    store("webatlas.settings", { preset, values, off });
   }
 
   function initSettings() {
@@ -194,7 +220,9 @@
       for (const f of BOOL_FIELDS) if (typeof saved.values[f] === "boolean") $(f).checked = saved.values[f];
       const radio = document.querySelector(`input[name=preset][value="${saved.preset}"]`);
       if (radio) radio.checked = true;
+      for (const f of LIFTABLE) $(`${f}_off`).checked = Array.isArray(saved.off) && saved.off.includes(f);
     }
+    syncLimitInputs();
     if (!info.render_available) {
       $("render_js").checked = false;
       $("render_js").disabled = true;
@@ -209,6 +237,15 @@
       if (r.value !== "custom") applyPreset(r.value);
       saveSettings();
     }));
+    for (const f of LIFTABLE) {
+      $(`${f}_off`).addEventListener("change", () => {
+        document.querySelector("input[name=preset][value=custom]").checked = true;
+        syncLimitInputs();
+        updatePresetSummary();
+        saveSettings();
+        if (!$(`${f}_off`).checked) $(f).focus();
+      });
+    }
     for (const f of [...NUMBER_FIELDS, ...BOOL_FIELDS]) {
       $(f).addEventListener("input", () => {
         if (NUMBER_FIELDS.includes(f) && f in PRESETS.standard) {
@@ -310,6 +347,7 @@
     $("stats").hidden = true;
     $("progress").hidden = true;
     $("stoppedNote").hidden = true;
+    $("mapNote").hidden = true;
     $("results").hidden = true;
     $("atlasEmpty").hidden = false;
     $("atlasCaption").hidden = true;
@@ -414,8 +452,15 @@
 
     const running = scan.status === "running";
     $("progress").hidden = !running;
+    $("progress").classList.toggle("open-ended", running && !scan.maxPages);
     if (running && scan.maxPages) {
       $("progressBar").style.width = `${Math.min(100, (scan.pages.length / scan.maxPages) * 100)}%`;
+    }
+    const mapNote = $("mapNote");
+    mapNote.hidden = !atlas.truncated;
+    if (atlas.truncated) {
+      mapNote.textContent = `The map shows the first ${fmt(window.Atlas.MAX_MAP_PAGES)} pages and ` +
+        `${fmt(window.Atlas.MAX_MAP_DOCS)} documents to stay fast. The tables and exports include everything.`;
     }
     const stop = $("stopBtn");
     stop.hidden = !running;

@@ -16,7 +16,8 @@ from webatlas.fetcher import Fetcher, FetchError
 from webatlas.robots import RobotsCache
 
 SITEMAP_MAX_BYTES = 20 * 1024 * 1024
-MAX_SITEMAP_FILES = 50
+MAX_SITEMAP_FILES = 50            # sitemap files read when there's a URL limit
+MAX_SITEMAP_FILES_UNLIMITED = 2000  # big sites split their sitemap into many files
 
 _PARSER = etree.XMLParser(resolve_entities=False, no_network=True, recover=True, huge_tree=False)
 
@@ -47,16 +48,17 @@ def parse_sitemap(xml: bytes) -> tuple[list[str], list[str]]:
     return locs, []
 
 
-async def collect_sitemap_urls(root_url: str, fetcher: Fetcher, robots: RobotsCache, limit: int) -> list[str]:
+async def collect_sitemap_urls(root_url: str, fetcher: Fetcher, robots: RobotsCache, limit: int | None) -> list[str]:
     """Find the site's sitemaps (robots.txt `Sitemap:` lines, else /sitemap.xml) and
-    return up to `limit` URLs listed in them."""
+    return up to `limit` URLs listed in them (all of them if limit is None)."""
     parts = urlsplit(root_url)
     origin = f"{parts.scheme}://{parts.netloc}"
     queue = await robots.sitemaps(root_url) or [f"{origin}/sitemap.xml"]
     seen_files: set[str] = set()
     urls: list[str] = []
 
-    while queue and len(seen_files) < MAX_SITEMAP_FILES and len(urls) < limit:
+    max_files = MAX_SITEMAP_FILES if limit is not None else MAX_SITEMAP_FILES_UNLIMITED
+    while queue and len(seen_files) < max_files and (limit is None or len(urls) < limit):
         sitemap_url = queue.pop(0)
         if sitemap_url in seen_files:
             continue
@@ -68,6 +70,6 @@ async def collect_sitemap_urls(root_url: str, fetcher: Fetcher, robots: RobotsCa
         if not result.ok:
             continue
         pages, children = parse_sitemap(result.body)
-        urls.extend(pages[: limit - len(urls)])
+        urls.extend(pages if limit is None else pages[: limit - len(urls)])
         queue.extend(children)
     return urls

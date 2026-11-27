@@ -13,6 +13,10 @@
   "use strict";
 
   const RING = 130;                  // world units between depth rings
+  // Drawing every node of a huge scan would make the map unusably slow. Beyond these the map stops
+  // adding nodes and says so; the tables and exports still have everything.
+  const MAX_MAP_PAGES = 3000;
+  const MAX_MAP_DOCS = 20000;
   const GOLDEN = Math.PI * (3 - Math.sqrt(5));
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -52,6 +56,7 @@
       this.docsByPage = new Map();
       this.sections = new Map();  // key -> { key, label, order, pages: [] }
       this.maxDepth = 0;
+      this.truncated = false;     // true once the map stopped adding nodes
       this.selected = null;       // selected page url
       this.hover = null;
       this.flashUntil = new Map();
@@ -83,6 +88,7 @@
     addPages(pages) {
       for (const p of pages) {
         if (this.pages.has(p.url)) continue;
+        if (this.pages.size >= MAX_MAP_PAGES) { this.truncated = true; break; }
         const sec = this._sectionOf(p.url);
         if (!this.sections.has(sec.key)) {
           this.sections.set(sec.key, { key: sec.key, label: sec.label, order: this.sections.size, pages: [] });
@@ -102,6 +108,7 @@
 
     addDocuments(docs) {
       for (const d of docs) {
+        if (this.docs.length >= MAX_MAP_DOCS) { this.truncated = true; break; }
         const host = d.source_page && this.pages.has(d.source_page) ? d.source_page : null;
         const node = {
           kind: "doc", url: d.final_url || d.url, title: d.title || "", type: d.doc_type || "",
@@ -543,5 +550,7 @@
 
   function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
+  Atlas.MAX_MAP_PAGES = MAX_MAP_PAGES;
+  Atlas.MAX_MAP_DOCS = MAX_MAP_DOCS;
   window.Atlas = Atlas;
 })();
