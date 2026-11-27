@@ -134,3 +134,58 @@ def test_gzip_bomb_is_capped():
     bomb = gzip.compress(b"<urlset>" + b" " * (80 * 1024 * 1024) + b"</urlset>")
     pages, children = parse_sitemap(bomb)   # must return quickly without decompressing 80 MB
     assert pages == [] and children == []
+
+
+def test_bad_gzip_and_bad_redirects_are_clean_fetch_errors():
+    import asyncio
+
+    import httpx
+
+    from webatlas.config import CrawlConfig
+    from webatlas.fetcher import Fetcher, FetchError
+
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if request.url.path == "/gz":
+            return httpx.Response(200, headers={"content-encoding": "gzip"}, content=b"not gzip at all")
+        return httpx.Response(302, headers={"location": "http://[::1"})
+
+    async def go():
+        cfg = CrawlConfig(per_host_delay=0, retries=3, allow_private_networks=True)
+        async with Fetcher(cfg, transport=httpx.MockTransport(handler)) as f:
+            with pytest.raises(FetchError, match="DecodingError"):
+                await f.get("http://x.test/gz")
+            assert calls["n"] == 1, "a decoding error must not be retried"
+        cfg0 = CrawlConfig(per_host_delay=0, retries=0, allow_private_networks=True)
+        async with Fetcher(cfg0, transport=httpx.MockTransport(handler)) as f:
+            # httpx or our own check rejects it; either way it's a clean FetchError, not a crash
+            with pytest.raises(FetchError, match="(?i)invalid (redirect|url)"):
+                await f.get("http://x.test/redirect")
+
+    asyncio.run(go())
+
+
+def test_no_wasted_sleep_after_the_last_retry():
+    import asyncio
+    import time
+
+    import httpx
+
+    from webatlas.config import CrawlConfig
+    from webatlas.fetcher import Fetcher, FetchError
+
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    async def go():
+        cfg = CrawlConfig(per_host_delay=0, retries=1, allow_private_networks=True)
+        async with Fetcher(cfg, transport=httpx.MockTransport(handler)) as f:
+            start = time.monotonic()
+            with pytest.raises(FetchError):
+                await f.get("http://x.test/")
+            return time.monotonic() - start
+
+    # one 1 s backoff between the two attempts, none after the final one
+    assert asyncio.run(go()) < 1.6
