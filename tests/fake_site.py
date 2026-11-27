@@ -89,6 +89,8 @@ class FakeSite:
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         self.requests.append((request.method, url))
+        if request.url.scheme == "https" and request.url.host == "college.test":
+            raise httpx.ConnectError("connection refused (no TLS on this server)", request=request)
 
         if url == "http://college.test/flaky":
             self._flaky_calls[url] += 1

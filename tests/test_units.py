@@ -23,7 +23,8 @@ def test_normalize_url(raw, expected):
     assert normalize_url(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["mailto:a@b.c", "javascript:void(0)", "tel:123", "#top", "", "ftp://x.y/z"])
+@pytest.mark.parametrize("raw", ["mailto:a@b.c", "javascript:void(0)", "tel:123", "#top", "", "ftp://x.y/z",
+                                 "http://host:abc/", "https://javascript:alert(1)", "http://[::1/"])
 def test_normalize_rejects_non_crawlable(raw):
     assert normalize_url(raw, "https://example.com/") is None
 
@@ -81,6 +82,11 @@ def test_is_html_sniffs_untyped_pages():
     assert not is_html("application/pdf", PDF)
 
 # ---------------------------------------------------------------- extraction
+
+
+def test_one_malformed_link_does_not_lose_the_others():
+    _title, links = extract_page('<a href="http://x.edu:bad/">bad</a><a href="/ok.pdf">ok</a>', "https://x.edu/")
+    assert [link.url for link in links] == ["https://x.edu/ok.pdf"]
 
 
 def test_extract_page_links_and_base_href():
