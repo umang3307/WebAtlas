@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "webatlas"
+version = "2.0.0a1"
+description = "Self-hosted crawler that maps every public document on a website."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Umang Agarwal" }]
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "protego>=0.3",
+    "w3lib>=2.1",
+    "tldextract>=5.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+# JavaScript rendering for sites that build their links with JS.
+# After installing, run: playwright install chromium
+render = ["playwright>=1.45"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+webatlas = "webatlas.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["webatlas"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["B008", "SIM105"]  # B008: Typer declares options as argument defaults
