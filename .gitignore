@@ -1,6 +1,12 @@
 .env
 __pycache__/
 *.pyc
-db/webatlas.db
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+webatlas.db*
+*.db-journal
 collectors_cache.json
+results*.json
 .DS_Store
+.venv/
