@@ -70,6 +70,14 @@ class Crawler:
         self.transport = transport
         self.resolver = resolver
         self.on_event = on_event or (lambda event: None)
+        self._stop_requested = False
+        self.result: CrawlResult | None = None
+        self.fetcher: Fetcher | None = None
+
+    def request_stop(self) -> None:
+        """Ask a running crawl to finish early. Safe to call from another thread;
+        the crawl returns everything found so far."""
+        self._stop_requested = True
 
     # ------------------------------------------------------------------ public
 
@@ -149,6 +157,11 @@ class Crawler:
         self._emit("info", message=f"sitemap listed {count} in-scope URLs")
 
     def _out_of_time(self) -> bool:
+        if self._stop_requested:
+            if not self.result.stopped_early:
+                self.result.stopped_early = "stopped by user"
+                self._emit("info", message="stopping: stopped by user")
+            return True
         if self._deadline is not None and time.monotonic() >= self._deadline:
             if not self.result.stopped_early:
                 self.result.stopped_early = f"time limit ({self.config.max_duration:g} s) reached"
@@ -233,9 +246,10 @@ class Crawler:
                 self._enqueue(PAGE, link.url, item.depth + 1, source_page=final, link_text=link.text)
 
         page = Page(url=final, depth=item.depth, status=response.status, title=title,
-                    links_found=len(links), documents_found=docs_here, rendered=rendered)
+                    links_found=len(links), documents_found=docs_here, rendered=rendered,
+                    found_on=item.source_page)
         self.result.pages.append(page)
-        self._emit("page", url=final, depth=item.depth, title=title, links=len(links),
+        self._emit("page", url=final, depth=item.depth, title=title, links=len(links), found_on=item.source_page,
                    documents=docs_here, pages_done=len(self.result.pages), max_pages=cfg.max_pages)
 
     async def _render(self, url: str):
