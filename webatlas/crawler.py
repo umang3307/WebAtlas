@@ -23,7 +23,7 @@ import itertools
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -60,7 +60,7 @@ def _under(count: int, limit: int | float | None) -> bool:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class Crawler:
@@ -105,21 +105,30 @@ class Crawler:
 
         async with Fetcher(cfg, transport=self.transport, resolver=self.resolver) as fetcher:
             self.fetcher = fetcher
-            self.robots = RobotsCache(fetcher, cfg.user_agent, enabled=cfg.respect_robots)
+            self.robots = RobotsCache(fetcher, cfg.user_agent, enabled=cfg.respect_robots,
+                                      on_note=lambda message: self._emit("info", message=message))
 
             for seed in normalized:
                 self._enqueue(PAGE, seed, depth=0)
 
-            if cfg.use_sitemaps:
-                await self._queue_sitemap_urls()
-
+            # Crawling starts right away; the sitemap is read alongside and feeds the same queue.
             workers = [asyncio.create_task(self._worker()) for _ in range(max(1, cfg.concurrency))]
+            tasks = list(workers)
             try:
-                await self._queue.join()
+                if cfg.use_sitemaps:
+                    sitemap_task = asyncio.create_task(self._queue_sitemap_urls())
+                    tasks.append(sitemap_task)
+                    await self._until_done_or_stopped(sitemap_task)
+                if not self._out_of_time():
+                    join_task = asyncio.create_task(self._queue.join())
+                    tasks.append(join_task)
+                    await self._until_done_or_stopped(join_task)
             finally:
-                for w in workers:
-                    w.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
+                # On Stop or a time limit this also cancels requests still in flight,
+                # so stopping takes effect within a fraction of a second.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 if self._renderer:
                     await self._renderer.close()
 
@@ -142,24 +151,38 @@ class Crawler:
         priority = -1 if kind == DOC else depth * 2 + (1 if from_sitemap else 0)
         self._queue.put_nowait(_Item(priority, next(self._seq), kind, url, depth, source_page, link_text))
 
+    async def _until_done_or_stopped(self, task: asyncio.Task) -> None:
+        """Wait for `task`, checking four times a second whether to stop early."""
+        while not task.done():
+            await asyncio.wait({task}, timeout=0.25)
+            if not task.done() and self._out_of_time():
+                return
+
     async def _queue_sitemap_urls(self) -> None:
+        self._sitemap_count = 0
+
+        def take(urls: list[str]) -> None:
+            for raw in urls:
+                url = normalize_url(raw)
+                if not url or not in_scope(url, self.root, self.config.include_subdomains):
+                    continue
+                self._sitemap_count += 1
+                if doc_type_from_url(url):
+                    self._enqueue(DOC, url, depth=1)
+                elif _under(0, self.config.max_depth):   # depth 1 allowed
+                    self._enqueue(PAGE, url, depth=1, from_sitemap=True)
+            self.result.sitemap_urls = self._sitemap_count
+
         try:
-            urls = await collect_sitemap_urls(self.root, self.fetcher, self.robots, self.config.max_sitemap_urls)
+            await collect_sitemap_urls(self.root, self.fetcher, self.robots, self.config.max_sitemap_urls,
+                                       on_batch=take, should_stop=self._out_of_time)
         except (FetchError, UnsafeTargetError) as exc:
             self._emit("info", message=f"sitemap skipped: {exc}")
             return
-        count = 0
-        for raw in urls:
-            url = normalize_url(raw)
-            if not url or not in_scope(url, self.root, self.config.include_subdomains):
-                continue
-            count += 1
-            if doc_type_from_url(url):
-                self._enqueue(DOC, url, depth=1)
-            elif _under(0, self.config.max_depth):   # depth 1 allowed
-                self._enqueue(PAGE, url, depth=1, from_sitemap=True)
-        self.result.sitemap_urls = count
-        self._emit("info", message=f"sitemap listed {count} in-scope URLs")
+        except Exception as exc:   # a broken sitemap must never stop the crawl
+            self._emit("info", message=f"sitemap skipped: unexpected {type(exc).__name__}: {exc}")
+            return
+        self._emit("info", message=f"sitemap listed {self._sitemap_count} in-scope URLs")
 
     def _out_of_time(self) -> bool:
         if self._stop_requested:
@@ -198,8 +221,7 @@ class Crawler:
         if not _under(self._pages_reserved, cfg.max_pages):
             return
         if not await self.robots.allowed(item.url):
-            self.result.skipped_by_robots.append(item.url)
-            self._emit("skipped", url=item.url, reason="robots.txt")
+            self._skip_robots(item.url)
             return
         if not _under(self._pages_reserved, cfg.max_pages):   # re-check: other workers ran during the await
             return
@@ -233,7 +255,8 @@ class Crawler:
                 self._fail(item.url, f"redirected off-site to {final}")
                 return
 
-        title, links = extract_page(response.text(), final)
+        # Parsing is CPU work: run it in a thread so other requests, progress and Stop stay live.
+        title, links = await asyncio.to_thread(extract_page, response.body, final, response.charset)
         rendered = False
         if self._render_ok and len(links) < cfg.render_min_links:
             rendered_links = await self._render(final)
@@ -265,6 +288,7 @@ class Crawler:
             if self._renderer is None:
                 self._renderer = Renderer(self.config.user_agent, guard=self.fetcher.guard)
             html = await self._renderer.render(url)
+            return await asyncio.to_thread(extract_page, html, url)
         except RenderUnavailable as exc:
             self._render_ok = False
             self._emit("info", message=str(exc))
@@ -272,7 +296,6 @@ class Crawler:
         except Exception as exc:
             self._emit("info", message=f"render failed for {url}: {exc}")
             return None
-        return extract_page(html, url)
 
     # ------------------------------------------------------------------ documents
 
@@ -281,8 +304,7 @@ class Crawler:
         if not _under(len(self.result.documents), cfg.max_documents):
             return
         if not await self.robots.allowed(item.url):
-            self.result.skipped_by_robots.append(item.url)
-            self._emit("skipped", url=item.url, reason="robots.txt")
+            self._skip_robots(item.url)
             return
 
         if not _under(self._doc_checks, cfg.max_doc_checks):
@@ -363,6 +385,10 @@ class Crawler:
 
     # ------------------------------------------------------------------ helpers
 
+    def _skip_robots(self, url: str) -> None:
+        self.result.skipped_by_robots.append(url)
+        self._emit("skipped", url=url, reason=self.robots.why_blocked(url))
+
     def _skip_trap(self, url: str) -> None:
         key = f"trap:{url}"
         if key in self._seen:
@@ -406,7 +432,7 @@ async def discover_sections(
         if not response.ok:
             raise FetchError(f"HTTP {response.status} for {root}")
         final = normalize_url(response.final_url) or root
-        _title, links = extract_page(response.text(), final)
+        _title, links = await asyncio.to_thread(extract_page, response.body, final, response.charset)
         sections, docs = [], []
         for link in links:
             if doc_type_from_url(link.url):
