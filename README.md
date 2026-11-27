@@ -22,7 +22,7 @@ page it was found on. No paid APIs, no API keys.
 | JavaScript sites | Handled by Bright Data | Optional headless-browser fallback (Playwright) |
 | Security | User URL passed to a shell command | SSRF guard on every request and redirect, no shell calls, UI output escaped |
 | Interfaces | Web UI | Scan console with a live site map, history and export, plus a `webatlas` CLI |
-| Tests | None | 83 tests against a fake website (no network needed), plus a live-site workflow |
+| Tests | None | 107 tests against a fake website (no network needed), plus a live-site workflow |
 
 ## How it works
 
@@ -56,7 +56,14 @@ pip install -e .
 webatlas ui
 ```
 
-That opens the scan console at `http://127.0.0.1:5000`.
+That opens the scan console at `http://127.0.0.1:5000`. Requires Python 3.11.5 or newer.
+
+For a verified install, where every dependency is pinned and checked against a known hash, use the lock file:
+
+```bash
+pip install --require-hashes -r requirements.lock
+pip install --no-deps -e .
+```
 
 ![WebAtlas scan console](docs/console.png)
 
@@ -113,6 +120,17 @@ ruff check .
 
 To try the crawler on a site running on your own machine, pass `--allow-private` to the CLI or set
 `WEBATLAS_ALLOW_PRIVATE=1` before `webatlas ui`. Both are off by default.
+
+### Dependencies
+
+WebAtlas depends only on free, widely used open-source libraries and needs no API keys or paid services.
+`requirements.lock` pins every package to an exact version and hash, using only releases at least a week
+old. CI installs from it, runs `pip-audit` on it, and Dependabot reports new vulnerabilities. To update it:
+
+```bash
+uv pip compile pyproject.toml --universal --python-version 3.11.5 --generate-hashes \
+  --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" -o requirements.lock
+```
 
 ## Responsible use
 

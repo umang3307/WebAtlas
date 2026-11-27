@@ -1,0 +1,13 @@
+# Free GitHub alerts and update PRs for vulnerable or outdated dependencies.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7   # skip brand-new releases; malicious versions are usually pulled within days
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
