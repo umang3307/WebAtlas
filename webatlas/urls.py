@@ -25,7 +25,10 @@ _TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid")
 
 
 def is_http_url(url: str) -> bool:
-    return urlsplit(url).scheme in ("http", "https")
+    try:
+        return urlsplit(url).scheme in ("http", "https")
+    except ValueError:
+        return False
 
 
 def _remove_dot_segments(path: str) -> str:
@@ -51,15 +54,21 @@ def normalize_url(url: str, base: str | None = None) -> str | None:
     if not url or url.startswith("#"):
         return None
     if base:
-        url = urljoin(base, url)
+        try:
+            url = urljoin(base, url)
+        except ValueError:   # e.g. "http://[::1/" - malformed IPv6 host
+            return None
     if not is_http_url(url):
         return None
 
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower().rstrip(".")
+    try:
+        parts = urlsplit(url)   # raises ValueError for a malformed IPv6 host
+        host = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port       # raises ValueError for junk like "http://host:abc/"
+    except ValueError:
+        return None
     if not host:
         return None
-    port = parts.port
     netloc = host if port in (None, _DEFAULT_PORTS.get(parts.scheme)) else f"{host}:{port}"
 
     query = "&".join(
@@ -71,7 +80,10 @@ def normalize_url(url: str, base: str | None = None) -> str | None:
 
 
 def host_of(url: str) -> str:
-    return (urlsplit(url).hostname or "").lower()
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def registered_domain(url_or_host: str) -> str:

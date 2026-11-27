@@ -20,6 +20,7 @@ class Page:
     links_found: int = 0
     documents_found: int = 0
     rendered: bool = False   # True if the JavaScript fallback was used
+    found_on: str = ""       # page that linked here ("" for seeds and sitemap entries)
 
 
 @dataclass
