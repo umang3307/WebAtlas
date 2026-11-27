@@ -1,4 +1,6 @@
-import sqlite3, json, os
+import json
+import os
+import sqlite3
 from datetime import datetime, timezone
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "webatlas.db")
@@ -15,7 +17,7 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
-    with open(SCHEMA_PATH, "r") as f:
+    with open(SCHEMA_PATH) as f:
         conn.executescript(f.read())
     conn.commit()
     conn.close()
@@ -25,7 +27,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def start_scan(target_domain, collector_id=""):
+def start_scan(target_domain, collector_id=""):  # collector_id kept for v1 schema compatibility
     conn = get_connection()
     cur = conn.execute("INSERT INTO scans (target_domain, collector_id, started_at) VALUES (?, ?, ?)",
                         (target_domain, collector_id, _now()))
