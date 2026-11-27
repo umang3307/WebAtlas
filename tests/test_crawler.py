@@ -199,3 +199,114 @@ async def test_crawler_traps_are_skipped():
     deepest = max(p.url.count("/a") for p in result.pages)
     assert deepest <= 3
     assert any("crawler trap" in f.reason for f in result.failures)
+
+
+# ---------------------------------------------------------------- quality-review regressions
+
+
+async def test_robots_server_error_means_crawl_nothing_rfc9309():
+    site = FakeSite()
+    site.routes["http://college.test/robots.txt"] = (503, {"content-type": "text/plain"}, b"")
+    result, events = await run(site, use_sitemaps=False, retries=0)
+    assert result.pages == [] and result.documents == []
+    assert "http://college.test/" in result.skipped_by_robots
+    reasons = [e.get("reason", "") for e in events if e["type"] == "skipped"]
+    assert any("HTTP 503" in r and "crawl nothing" in r for r in reasons)
+
+
+async def test_robots_forbidden_means_no_rules_rfc9309():
+    site = FakeSite()
+    site.routes["http://college.test/robots.txt"] = (403, {"content-type": "text/plain"}, b"")
+    result, _ = await run(site, use_sitemaps=False)
+    assert result.pages, "a 403 robots.txt means 'no rules', so the site is crawled"
+    assert site.fetched("http://college.test/private/staff")
+
+
+async def test_stop_takes_effect_quickly_even_with_slow_requests():
+    import asyncio as _asyncio
+    import time as _time
+
+    import httpx
+
+    site = FakeSite()
+
+    class VerySlow(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if request.url.path == "/notices":
+                await _asyncio.sleep(30)    # a server that hangs
+            return site.handler(request)
+
+    crawler = Crawler(config(concurrency=2), transport=VerySlow())
+    task = _asyncio.create_task(crawler.crawl([ROOT]))
+    await _asyncio.sleep(0.3)
+    started = _time.monotonic()
+    crawler.request_stop()
+    result = await _asyncio.wait_for(task, timeout=5)
+    assert _time.monotonic() - started < 1.5
+    assert result.stopped_early == "stopped by user"
+
+
+async def test_stop_applies_while_reading_a_huge_sitemap():
+    import asyncio as _asyncio
+
+    import httpx
+
+    site = FakeSite()
+    entries = b"".join(f"<sitemap><loc>http://college.test/sm-{i}.xml</loc></sitemap>".encode() for i in range(500))
+    index = b"<sitemapindex>" + entries + b"</sitemapindex>"
+    site.routes["http://college.test/sitemap_index.xml"] = (200, {"content-type": "application/xml"}, index)
+
+    class Slow(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await _asyncio.sleep(0.05)
+            return site.handler(request)
+
+    crawler = Crawler(config(max_depth=None, max_pages=None, max_sitemap_urls=None), transport=Slow())
+    task = _asyncio.create_task(crawler.crawl([ROOT]))
+    await _asyncio.sleep(0.5)
+    crawler.request_stop()
+    result = await _asyncio.wait_for(task, timeout=3)
+    assert result.stopped_early == "stopped by user"
+    assert sum(1 for m, u in site.requests if "/sm-" in u) < 500
+
+
+async def test_pages_are_crawled_while_the_sitemap_is_still_being_read():
+    import asyncio as _asyncio
+
+    import httpx
+
+    site = FakeSite()
+
+    class SlowSitemap(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if "sitemap" in request.url.path:
+                await _asyncio.sleep(0.4)
+            return site.handler(request)
+
+    events = []
+    await Crawler(config(), transport=SlowSitemap(), on_event=events.append).crawl([ROOT])
+    order = [e["type"] for e in events if e["type"] in ("page", "info")]
+    first_page = order.index("page")
+    sitemap_done = next(i for i, e in enumerate(e for e in events if e["type"] in ("page", "info"))
+                        if e["type"] == "info" and "sitemap listed" in e["message"])
+    assert first_page < sitemap_done
+
+
+async def test_page_charset_from_meta_tag_is_respected():
+    site = FakeSite()
+    # windows-1252 bytes, declared only inside the page (no charset in the HTTP header)
+    body = ('<html><head><meta charset="windows-1252"><title>Café notices</title></head><body>'
+            '<a href="/files/menu.pdf">Café menu – 2025</a></body></html>').encode("windows-1252")
+    site.routes["http://college.test/"] = (200, {"content-type": "text/html"}, body)
+    site.routes["http://college.test/files/menu.pdf"] = site.routes["http://college.test/files/annual-report.pdf"]
+    result, _ = await run(site, use_sitemaps=False)
+    assert result.pages[0].title == "Café notices"
+    assert any(d.title == "Café menu – 2025" for d in result.documents)
+
+
+async def test_txt_files_served_as_plain_text_are_documents():
+    site = FakeSite()
+    site.routes["http://college.test/"] = (200, {"content-type": "text/html"}, b'<a href="/rules.txt">Rules</a>')
+    site.routes["http://college.test/rules.txt"] = (200, {"content-type": "text/plain; charset=utf-8"}, b"rules")
+    result, _ = await run(site, use_sitemaps=False)
+    assert [d.doc_type for d in result.documents] == ["txt"]

@@ -29,10 +29,17 @@ def _clean(text: str) -> str:
     return _WS.sub(" ", text or "").strip()[:300]
 
 
-def extract_page(html: str, page_url: str) -> tuple[str, list[Link]]:
+def extract_page(html: str | bytes, page_url: str, encoding: str | None = None) -> tuple[str, list[Link]]:
     """Return (page_title, links). Links are absolute, normalized and de-duplicated;
-    the first non-empty anchor text seen for a URL is kept as its text."""
-    soup = BeautifulSoup(html, "lxml")
+    the first non-empty anchor text seen for a URL is kept as its text.
+
+    Pass raw bytes when you can: with no `encoding` (the HTTP header's charset), the parser
+    reads the page's own <meta charset>, so pages in windows-1252, Shift_JIS etc. aren't garbled.
+    This is CPU work, so async callers should run it in a thread."""
+    if isinstance(html, bytes):
+        soup = BeautifulSoup(html, "lxml", from_encoding=encoding)
+    else:
+        soup = BeautifulSoup(html, "lxml")
 
     base = page_url
     base_tag = soup.find("base", href=True)
