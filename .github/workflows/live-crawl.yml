@@ -15,7 +15,7 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install --require-hashes -r requirements.lock && pip install --no-deps -e .
       - run: python scripts/live_crawl.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: { name: live-results-plain, path: live-results/ }
 
@@ -28,6 +28,6 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e ".[render]" && playwright install --with-deps chromium
       - run: python scripts/live_crawl.py --render https://www.python.org/ https://react.dev/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: { name: live-results-render, path: live-results/ }
