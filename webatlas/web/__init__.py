@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 from webatlas import __version__
 from webatlas.config import CrawlConfig
@@ -70,12 +71,15 @@ def create_app(
         if request.method in ("POST", "DELETE") and request.path.startswith("/api/") and not request.is_json:
             abort(415, description="send JSON")
 
-    @app.errorhandler(400)
-    @app.errorhandler(403)
-    @app.errorhandler(404)
-    @app.errorhandler(415)
-    def json_error(err):
-        return jsonify({"error": getattr(err, "description", str(err))}), err.code
+    @app.errorhandler(HTTPException)
+    def json_error(err: HTTPException):
+        # Every error the interface can see comes back as JSON with a readable message.
+        return jsonify({"error": err.description or err.name}), err.code
+
+    @app.errorhandler(Exception)
+    def unexpected_error(err: Exception):
+        app.logger.exception("unhandled error")
+        return jsonify({"error": "Something went wrong inside WebAtlas. Details are in the terminal."}), 500
 
     @app.after_request
     def security_headers(resp: Response):
@@ -166,7 +170,7 @@ def create_app(
 
     @app.get("/api/scans/<scan_id>")
     def scan(scan_id):
-        cursors = {k: request.args.get(k, 0, type=int) for k in ("events", "documents", "pages", "issues")}
+        cursors = {k: max(0, request.args.get(k, 0, type=int)) for k in ("events", "documents", "pages", "issues")}
         snap = manager.snapshot(scan_id, cursors)
         if snap is None:
             abort(404, description="No scan with that id")

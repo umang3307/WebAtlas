@@ -226,3 +226,71 @@ def test_unlimited_scan_through_the_console(client):
     # With no depth limit the two-hop spreadsheet is found and nothing is left unconfirmed.
     assert any(d["final_url"].endswith("t-2023.xlsx") for d in data["documents"])
     assert not any(d["detected_by"] == "extension-unverified" for d in data["documents"])
+
+
+# ---------------------------------------------------------------- quality-review regressions
+
+
+def test_concurrent_starts_cannot_exceed_the_running_limit(tmp_path):
+    import asyncio
+    import threading
+
+    import httpx
+
+    site = FakeSite()
+
+    class Slow(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            await asyncio.sleep(0.5)
+            return site.handler(request)
+
+    app = create_app(db_path=tmp_path / "s.db", allow_private=True, transport=Slow())
+    codes, barrier = [], threading.Barrier(20)
+
+    def fire():
+        barrier.wait()
+        codes.append(app.test_client().post("/api/scans", json={"url": ROOT, "settings": FAST}).status_code)
+
+    threads = [threading.Thread(target=fire) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert codes.count(201) == MAX_RUNNING and codes.count(429) == 20 - MAX_RUNNING
+    manager = app.config["MANAGER"]
+    for scan_id in list(manager.jobs):
+        manager.stop(scan_id)
+
+
+def test_partial_results_are_saved_when_a_scan_crashes(tmp_path, site, monkeypatch):
+    from webatlas.crawler import Crawler
+
+    original = Crawler._until_done_or_stopped
+
+    async def crash_after_work(self, task):
+        await original(self, task)
+        if self.result.pages:
+            raise RuntimeError("simulated crash after finding pages")
+
+    monkeypatch.setattr(Crawler, "_until_done_or_stopped", crash_after_work)
+    client = create_app(db_path=tmp_path / "s.db", allow_private=True, transport=site.transport()).test_client()
+    scan_id = start(client).get_json()["id"]
+    data = wait_done(client, scan_id)
+    assert data["status"] == "error" and "simulated crash" in data["error"]
+
+    # Reload from the database, as after a restart: what was found before the crash is kept.
+    saved = create_app(db_path=tmp_path / "s.db", allow_private=True).test_client() \
+        .get(f"/api/scans/{scan_id}").get_json()
+    assert saved["status"] == "error" and len(saved["pages"]) >= 1
+
+
+def test_negative_cursors_are_clamped(client):
+    scan_id = start(client).get_json()["id"]
+    full = wait_done(client, scan_id)
+    again = client.get(f"/api/scans/{scan_id}?documents=-5&pages=-5").get_json()
+    assert len(again["documents"]) == len(full["documents"])
+
+
+def test_errors_are_always_json(client):
+    res = client.put("/api/scans")
+    assert res.status_code == 405 and "error" in res.get_json()

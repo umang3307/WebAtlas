@@ -10,6 +10,8 @@ import json
 import os
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 DEFAULT_DB = Path(os.environ.get("WEBATLAS_DB", "webatlas.db"))
@@ -35,14 +37,23 @@ class ScanStore:
         self.path = str(path)
         self._lock = threading.Lock()
         with self._connect() as conn:
+            # WAL lets the interface read history while a finishing scan writes its results.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
             # Scans that were running when the server stopped can't be resumed (yet).
             conn.execute("UPDATE scans SET status = 'interrupted' WHERE status = 'running'")
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """A connection that commits on success, rolls back on error, and is always closed.
+        (sqlite3's own context manager commits but leaves the connection open.)"""
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def create(self, scan_id: str, target: str, settings: dict, started_at: str) -> None:
         with self._lock, self._connect() as conn:
