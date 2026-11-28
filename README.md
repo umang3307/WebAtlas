@@ -141,7 +141,7 @@ keep it that way when crawling sites you don't own.
 
 - [x] **Phase 1:** own crawler: robots.txt, sitemaps, document detection, SSRF guard, CLI, tests
 - [x] **Scan console:** live site map, scan settings, history, stop, CSV/JSON export
-- [ ] **Phase 2:** FastAPI backend, resumable background jobs, live progress (SSE), SQLAlchemy storage
+- [x] **Phase 2:** SQLAlchemy storage written during the crawl, resumable scans that survive a restart, streaming export
 - [ ] **Phase 3:** document analysis: metadata leaks (authors, software, internal paths), emails, secrets
 - [ ] **Phase 4:** AI layer: local-LLM link prioritisation, document classification, RAG Q&A with citations
 - [ ] **Phase 5:** Docker Compose, benchmarks, demo
