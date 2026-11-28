@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from webatlas.models import CrawlResult, Document, Failure, Page
+from webatlas.passive import SecFinding, _Rec
 
 
 @dataclass(order=True)
@@ -58,6 +59,7 @@ class ResultSink(Protocol):
     def enqueued(self, item: QueueItem) -> None: ...
     def processed(self, item: QueueItem) -> None: ...
     def sitemap_done(self, urls: int) -> None: ...
+    def security(self, finding: SecFinding) -> None: ...
 
 
 class MemorySink:
@@ -65,6 +67,17 @@ class MemorySink:
 
     def __init__(self, result: CrawlResult):
         self.result = result
+        self._sec: dict[tuple[str, str], _Rec] = {}
+
+    def security(self, finding: SecFinding) -> None:
+        key = (finding.rule, finding.host)
+        rec = self._sec.get(key)
+        if rec:
+            rec.count += 1
+        else:
+            self._sec[key] = _Rec(finding.rule, finding.severity, finding.title, finding.detail,
+                                  finding.host, finding.url)
+        self.result.security = list(self._sec.values())
 
     def page(self, page: Page) -> None:
         self.result.pages.append(page)

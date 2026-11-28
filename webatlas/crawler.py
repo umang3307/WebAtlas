@@ -31,6 +31,7 @@ from webatlas.detect import classify_response, doc_type_from_url, is_html, sha25
 from webatlas.extract import extract_page
 from webatlas.fetcher import Fetcher, FetchError, FetchResult
 from webatlas.models import CrawlResult, Document, Failure, Page
+from webatlas.passive import scan_response
 from webatlas.render import Renderer, RenderUnavailable
 from webatlas.robots import RobotsCache
 from webatlas.safety import Resolver, UnsafeTargetError, default_resolver
@@ -303,6 +304,10 @@ class Crawler:
                     found_on=item.source_page)
         self.result.pages_count += 1
         self.sink.page(page)
+        if cfg.passive_scan:
+            for finding in scan_response(final, response.status, response.headers,
+                                         response.content_type, response.body, is_html=True):
+                self.sink.security(finding)
         self._emit("page", url=final, depth=item.depth, title=title, links=len(links), found_on=item.source_page,
                    documents=docs_here, pages_done=self.result.pages_count, max_pages=cfg.max_pages)
 

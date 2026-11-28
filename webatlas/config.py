@@ -41,6 +41,11 @@ class CrawlConfig:
     # Documents.
     download_documents: bool = False  # download each document to hash it (SHA-256) and dedupe
 
+    # Passive security scanning: inspect each page's own response (headers + body) for weak
+    # security headers, insecure cookies, version disclosure, etc. Non-intrusive — no extra
+    # requests, so it's on by default.
+    passive_scan: bool = True
+
     # JavaScript fallback (needs the optional "render" extra + `playwright install chromium`).
     render_js: bool = False
     render_min_links: int = 3   # re-render a page with a browser if it has fewer links than this
