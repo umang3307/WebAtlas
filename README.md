@@ -81,6 +81,12 @@ pip install --no-deps -e .
   author names and internal usernames in metadata, software versions, internal and network paths, email
   addresses, hard-coded secrets (API keys, tokens, private keys) and "confidential" markers. Each finding has
   a severity, and secrets are **masked** — WebAtlas reports that a key leaked without keeping a copy of it.
+- **Ask AI** (the *Ask AI* tab on an analysed scan) builds a searchable index of the documents' text and
+  answers questions about them with citations back to the source files. It also labels each document with a
+  category and one-line summary. It is **local-first**: with [Ollama](https://ollama.com) (or any
+  OpenAI-compatible endpoint) it writes generated answers; with no model at all it falls back to a built-in
+  offline search that still finds the most relevant passages. No API key is required, and nothing leaves your
+  machine unless you point it at a hosted API yourself. See [AI layer](#ai-layer-optional) below.
 - **Stop** a scan at any time and keep what it found; **Resume** a scan that was interrupted or stopped.
   **Export** to CSV or JSON (streamed, so even a scan with hundreds of thousands of documents exports without
   being held in memory). Scans are written to `webatlas.db` as they run and listed in the sidebar.
@@ -106,6 +112,40 @@ Every one of them can be lifted: pass `0` for `--max-pages`, `--max-time` or `--
 `--unlimited` to lift them all, including depth. Press Ctrl+C once to stop and keep the results.
 Politeness settings (delay per host, parallel requests, robots.txt) always apply, and crawler traps such as
 endlessly repeating paths are skipped automatically.
+
+### AI layer (optional)
+
+WebAtlas can classify documents and answer questions about them. It talks to any OpenAI-compatible
+endpoint and defaults to a local [Ollama](https://ollama.com) install, so it runs free and offline:
+
+```bash
+ollama pull llama3.1          # a chat model, for generated answers and classification
+ollama pull nomic-embed-text  # an embedding model, for better search (optional)
+```
+
+Configuration is entirely by environment variable — never from the web UI, so a page you've opened in the
+console can't point WebAtlas at another host:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WEBATLAS_LLM_URL` | `http://localhost:11434/v1` | OpenAI-compatible base URL |
+| `WEBATLAS_LLM_MODEL` | `llama3.1` | chat model (answers, classification) |
+| `WEBATLAS_LLM_EMBED_MODEL` | `nomic-embed-text` | embedding model |
+| `WEBATLAS_LLM_KEY` | *(unset)* | API key — only needed for a hosted endpoint |
+
+Everything degrades gracefully. With **no model reachable**, document search still works using a built-in,
+dependency-free offline embedder (a hashing bag-of-words), and the *Ask AI* tab returns the most relevant
+passages instead of a written answer. Point `WEBATLAS_LLM_URL` at a hosted API and set `WEBATLAS_LLM_KEY`
+only if you deliberately want answers generated off your machine. On the command line, `--classify` labels
+each analysed document (needs a chat model):
+
+```bash
+webatlas crawl https://www.example.edu --classify
+```
+
+The index is built from the text analysis already extracted, so **analyse a scan before asking questions**.
+Documents' text is sent to whichever model you configure; with the default local Ollama it never leaves
+your computer.
 
 ### JavaScript-heavy sites (optional)
 
@@ -148,8 +188,8 @@ keep it that way when crawling sites you don't own.
 - [x] **Scan console:** live site map, scan settings, history, stop, CSV/JSON export
 - [x] **Phase 2:** SQLAlchemy storage written during the crawl, resumable scans that survive a restart, streaming export
 - [x] **Phase 3:** document analysis: metadata leaks, internal paths, emails, hard-coded secrets, confidential markers
-- [ ] **Phase 4:** AI layer: local-LLM link prioritisation, document classification, RAG Q&A with citations
-- [ ] **Phase 5:** Docker Compose, benchmarks, demo
+- [x] **Phase 4:** AI layer: local-first LLM client (Ollama by default), document classification, RAG Q&A with citations, offline fallback
+- [ ] **Phase 5:** passive vulnerability checks, extra reconnaissance, Docker Compose, benchmarks, demo
 
 ## History
 
