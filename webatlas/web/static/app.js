@@ -44,6 +44,7 @@
   /* ---------------------------------------------------------------- state */
 
   let info = { render_available: false, defaults: {} };
+  let aiInfo = { available: false };
   let scan = null;          // current scan state
   let pollTimer = 0;
   let pollToken = 0;
@@ -62,6 +63,7 @@
       filter: { q: "", types: new Set(), page: null }, docLimit: PAGE_SIZE, pageLimit: PAGE_SIZE,
       typeCounts: new Map(),   // kept up to date as documents arrive, instead of recounting
       findings: [], findingLimit: PAGE_SIZE, sevFilter: new Set(), analysis: {},
+      ai: {}, asking: false,
     };
   }
 
@@ -408,6 +410,8 @@
     scan.issues.push(...data.issues);
     scan.findings.push(...(data.findings || []));
     scan.analysis = data.analysis || {};
+    scan.ai = data.ai || {};
+    scan.indexable = data.indexable;
     for (const d of data.documents) scan.typeCounts.set(d.doc_type, (scan.typeCounts.get(d.doc_type) || 0) + 1);
     scan.events.push(...data.events);
     if (scan.events.length > 1500) scan.events.splice(0, scan.events.length - 1500);
@@ -429,15 +433,19 @@
     const analysisRunning = scan.analysis.running || scan.analysis.status === "running";
     const analysisChanged = scan.prevAnalysisStatus !== scan.analysis.status;
     scan.prevAnalysisStatus = scan.analysis.status;
+    const aiRunning = scan.ai.running || scan.ai.status === "running";
+    const aiChanged = scan.prevAiStatus !== scan.ai.status;
+    scan.prevAiStatus = scan.ai.status;
     const changed = [];
     if (data.documents.length || first) changed.push("documents");
     if (data.pages.length || first) changed.push("pages");
     if (data.issues.length || first) changed.push("issues");
     if ((data.findings && data.findings.length) || first || analysisChanged) changed.push("findings");
+    if (first || aiChanged) changed.push("ask");
     if (statusChanged) changed.push("documents", "pages", "issues");   // empty-state wording depends on status
     if (changed.length) scheduleRender(changed);
 
-    if (data.status === "running" || analysisRunning) {
+    if (data.status === "running" || analysisRunning || aiRunning) {
       pollTimer = setTimeout(() => poll(token), POLL_MS);
     }
     if (statusChanged && !first && data.status !== "running") {
@@ -449,6 +457,10 @@
     if (analysisChanged && !analysisRunning && scan.analysis.status === "done") {
       refreshHistory();
       toast(`Analysis finished: ${fmt(scan.analysis.findings || 0)} findings in ${fmt(scan.analysis.analyzed || 0)} documents.`);
+    }
+    if (aiChanged && !aiRunning && scan.ai.status === "done") {
+      const how = scan.ai.embed_kind === "model" ? "a model" : "the offline embedder";
+      toast(`AI index ready: ${fmt(scan.ai.chunks || 0)} passages from ${fmt(scan.ai.indexed || 0)} documents (${how}).`);
     }
   }
 
@@ -508,6 +520,18 @@
     if (analysisRunning) { stopAnalyze.disabled = false; stopAnalyze.textContent = "Stop analysis"; }
     $("countFindings").textContent = fmt(scan.analysis.findings || scan.findings.length);
 
+    const aiRunning = scan.ai.running || scan.ai.status === "running";
+    const index = $("indexBtn");
+    index.hidden = !scan.indexable || analysisRunning || aiRunning;
+    if (!index.hidden) {
+      index.disabled = false;
+      index.textContent = scan.ai.status === "done" ? "Rebuild AI index" : "Build AI index";
+    }
+    const stopIndex = $("stopIndexBtn");
+    stopIndex.hidden = !aiRunning;
+    if (aiRunning) { stopIndex.disabled = false; stopIndex.textContent = "Stop indexing"; }
+    $("deleteBtn").hidden = running || analysisRunning || aiRunning;
+
     const note = $("stoppedNote");
     note.classList.toggle("error", scan.status === "error");
     if (scan.status === "error") {
@@ -545,6 +569,7 @@
       if (pendingParts.has("pages")) renderPages();
       if (pendingParts.has("issues")) renderIssues();
       if (pendingParts.has("findings")) renderFindings();
+      if (pendingParts.has("ask")) renderAsk();
       pendingParts.clear();
     });
   }
@@ -710,6 +735,96 @@
     more.textContent = `Show more (${fmt(rows.length - shown.length)} left)`;
   }
 
+  /* ---------------------------------------------------------------- ask AI */
+
+  function renderAsk() {
+    const ai = scan.ai || {};
+    const st = $("askStatus");
+    const running = ai.running || ai.status === "running";
+    const ready = ai.status === "done";
+    st.className = "ask-status" + (running ? " running" : "") + (ai.status === "error" ? " error" : "");
+
+    const modelLine = aiInfo.available
+      ? `Model: ${aiInfo.model} at ${aiInfo.url}.`
+      : "No answering model is configured, so answers fall back to passage search. "
+        + "Start Ollama or set WEBATLAS_LLM_URL for generated answers.";
+
+    if (running) {
+      st.textContent = `Building the AI index… ${fmt(ai.indexed || 0)} documents, ${fmt(ai.chunks || 0)} passages so far.`;
+    } else if (ai.status === "error") {
+      st.textContent = `Indexing failed: ${ai.error || "unknown error"}.`;
+    } else if (ready) {
+      const how = ai.embed_kind === "model" ? "an embedding model" : "the built-in offline embedder";
+      st.textContent = `Indexed ${fmt(ai.chunks || 0)} passages from ${fmt(ai.indexed || 0)} documents using ${how}. ${modelLine}`;
+    } else if (scan.indexable) {
+      st.textContent = `Build the AI index to ask questions about these documents. ${modelLine}`;
+    } else {
+      st.textContent = "Analyze the documents first — the AI index is built from their text.";
+    }
+
+    const input = $("askInput"), btn = $("askBtn");
+    input.disabled = !ready || scan.asking;
+    btn.disabled = !ready || scan.asking;
+    input.placeholder = ready ? "Ask a question about these documents…"
+      : "Build the AI index to ask questions";
+  }
+
+  async function onAsk(e) {
+    e.preventDefault();
+    if (!scan || scan.ai.status !== "done") return;
+    const input = $("askInput");
+    const question = input.value.trim();
+    if (!question) return;
+    scan.asking = true;
+    renderAsk();
+    const answer = $("askAnswer"), textEl = $("askText"), cites = $("askCitations");
+    answer.hidden = false;
+    textEl.textContent = "Thinking…";
+    cites.replaceChildren();
+    $("askCiteTitle").hidden = true;
+    try {
+      const res = await api(`/api/scans/${scan.id}/ask`, { method: "POST", body: { question } });
+      textEl.textContent = res.answer || "";
+      const list = res.citations || [];
+      $("askCiteTitle").hidden = list.length === 0;
+      cites.replaceChildren(...list.map((c, i) => el("li", {},
+        el("span", { class: "cite-num", text: `[${i + 1}]` }),
+        link(c.url, c.title || shortPath(c.url), "cite-link"),
+        el("span", { class: "cite-score", text: `match ${(c.score * 100).toFixed(0)}%` }),
+        el("p", { class: "cite-snippet", text: c.snippet }))));
+    } catch (err) {
+      textEl.textContent = "";
+      toast(err.message);
+    } finally {
+      scan.asking = false;
+      renderAsk();
+    }
+  }
+
+  async function onBuildIndex() {
+    const b = $("indexBtn");
+    b.disabled = true;
+    b.textContent = "Starting…";
+    const id = scan.id;
+    try {
+      await api(`/api/scans/${id}/index`, { method: "POST", body: {} });
+      selectTab("ask");
+      openScan(id);            // re-open so polling follows the indexing job
+    } catch (err) {
+      toast(err.message);
+      b.disabled = false;
+      b.textContent = "Build AI index";
+    }
+  }
+
+  async function onStopIndex() {
+    const b = $("stopIndexBtn");
+    b.disabled = true;
+    b.textContent = "Stopping…";
+    try { await api(`/api/scans/${scan.id}/index/stop`, { method: "POST", body: {} }); }
+    catch (err) { toast(err.message); b.disabled = false; b.textContent = "Stop indexing"; }
+  }
+
   function eventText(e) {
     switch (e.type) {
       case "page": return `Read ${shortPath(e.url)} (${e.links} links, ${e.documents} files)`;
@@ -754,7 +869,7 @@
 
   /* ---------------------------------------------------------------- tabs */
 
-  const TABS = ["documents", "pages", "findings", "issues", "activity"];
+  const TABS = ["documents", "pages", "findings", "ask", "issues", "activity"];
   function selectTab(name, focus = false) {
     for (const t of TABS) {
       const tab = $(`tab-${t}`), on = t === name;
@@ -897,6 +1012,9 @@
     $("resumeBtn").addEventListener("click", onResume);
     $("analyzeBtn").addEventListener("click", onAnalyze);
     $("stopAnalyzeBtn").addEventListener("click", onStopAnalysis);
+    $("indexBtn").addEventListener("click", onBuildIndex);
+    $("stopIndexBtn").addEventListener("click", onStopIndex);
+    $("askForm").addEventListener("submit", onAsk);
     $("deleteBtn").addEventListener("click", onDelete);
     $("zoomIn").addEventListener("click", () => atlas.zoom(1.3));
     $("zoomOut").addEventListener("click", () => atlas.zoom(1 / 1.3));
@@ -925,6 +1043,7 @@
 
   async function init() {
     try { info = await api("/api/info"); } catch (e) { toast(e.message); }
+    try { aiInfo = await api("/api/ai"); } catch (e) { /* AI is optional; panel shows offline mode */ }
     $("version").textContent = info.version ? `v${info.version}` : "";
     initSettings();
     initTabs();

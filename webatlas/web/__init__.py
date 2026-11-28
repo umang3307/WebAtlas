@@ -12,6 +12,10 @@ API (JSON):
   POST   /api/scans/<id>/resume          continue an interrupted or stopped scan
   POST   /api/scans/<id>/analyze         download the scan's documents and flag what they leak
   POST   /api/scans/<id>/analyze/stop    stop a running analysis, keep findings so far
+  GET    /api/ai                         model layer status (configured endpoint, availability)
+  POST   /api/scans/<id>/index           classify documents and embed them for question answering
+  POST   /api/scans/<id>/index/stop      stop a running indexing job, keep what's indexed
+  POST   /api/scans/<id>/ask   {question}  answer a question over the scan's documents, with citations
   DELETE /api/scans/<id>                 remove from history
   GET    /api/scans/<id>/export?format=json|csv   (streamed from the database)
 """
@@ -51,11 +55,13 @@ def create_app(
     transport: httpx.AsyncBaseTransport | None = None,
     resolver: Resolver = default_resolver,
     extra_hosts: set[str] | None = None,
+    llm_client=None,
 ) -> Flask:
     if allow_private is None:
         allow_private = os.environ.get("WEBATLAS_ALLOW_PRIVATE") == "1"
     db = Database(db_path or os.environ.get("WEBATLAS_DB", "webatlas.db"))
-    manager = ScanManager(db, allow_private=allow_private, transport=transport, resolver=resolver)
+    manager = ScanManager(db, allow_private=allow_private, transport=transport, resolver=resolver,
+                          llm_client=llm_client)
     allowed_hosts = LOCAL_HOSTS | (extra_hosts or set())
 
     app = Flask(__name__, static_folder=None)
@@ -213,6 +219,43 @@ def create_app(
         if not manager.stop_analysis(scan_id):
             return jsonify({"error": "No analysis is running for that scan"}), 409
         return jsonify({"ok": True})
+
+    @app.get("/api/ai")
+    def ai_info():
+        return jsonify(manager.ai_info())
+
+    @app.post("/api/scans/<scan_id>/index")
+    def build_index(scan_id):
+        try:
+            job = manager.build_index(scan_id)
+        except TooManyScans as exc:
+            return jsonify({"error": str(exc)}), 429
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        if job is None:
+            abort(404, description="No scan with that id")
+        return jsonify({"id": job.id})
+
+    @app.post("/api/scans/<scan_id>/index/stop")
+    def stop_index(scan_id):
+        if not manager.stop_index(scan_id):
+            return jsonify({"error": "No indexing is running for that scan"}), 409
+        return jsonify({"ok": True})
+
+    @app.post("/api/scans/<scan_id>/ask")
+    def ask_scan(scan_id):
+        question = ((request.get_json(silent=True) or {}).get("question") or "").strip()
+        if not question:
+            return jsonify({"error": "Ask a question."}), 400
+        if manager.db.get_scan(scan_id) is None:
+            abort(404, description="No scan with that id")
+        ans = manager.ask(scan_id, question)
+        return jsonify({
+            "mode": ans.mode, "answer": ans.text, "used_model": ans.used_model,
+            "citations": [{"document_id": c.document_id, "url": c.url, "title": c.title,
+                           "ordinal": c.ordinal, "snippet": c.snippet, "score": c.score}
+                          for c in ans.citations],
+        })
 
     @app.delete("/api/scans/<scan_id>")
     def delete_scan(scan_id):
