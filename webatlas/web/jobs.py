@@ -1,8 +1,11 @@
 """Background scans for the web interface.
 
-Each scan runs the async crawler in its own thread with its own event loop.
-The browser polls for progress with cursors ("give me everything after item N"),
-so each poll only carries what's new.
+Each scan runs the async crawler in its own thread with its own event loop, writing results
+straight to the database as it goes (webatlas.db.DbSink). The job keeps only counters and a
+short activity feed in memory, so memory stays flat however large the scan is.
+
+The browser polls with cursors. For documents, pages and issues a cursor is the id of the last
+row it has; the server returns rows with a greater id. For the activity feed it's a count.
 """
 
 from __future__ import annotations
@@ -12,22 +15,19 @@ import logging
 import threading
 import time
 import uuid
-from collections import Counter
-from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 import httpx
 
 from webatlas.config import CrawlConfig
 from webatlas.crawler import Crawler
-from webatlas.models import CrawlResult
+from webatlas.db import Database, DbSink, DocumentRow, IssueRow, PageRow
 from webatlas.safety import Resolver, default_resolver
-from webatlas.storage import ScanStore
 
 log = logging.getLogger("webatlas.web")
 
-MAX_EVENTS = 4000          # activity feed entries kept per scan
-MAX_RUNNING = 3            # scans allowed at the same time
+MAX_EVENTS = 4000            # activity feed entries kept per scan
+MAX_RUNNING = 3              # scans allowed at the same time
 KEEP_FINISHED_IN_MEMORY = 5  # older finished scans are served from the database
 DEFAULT_TIME_LIMIT = 600.0   # seconds, when the request doesn't set one
 
@@ -35,7 +35,7 @@ DEFAULT_TIME_LIMIT = 600.0   # seconds, when the request doesn't set one
 class TooManyScans(Exception):
     pass
 
-# Settings the interface may change, with their allowed ranges.
+
 SETTING_LIMITS: dict[str, tuple[type, float, float]] = {
     "max_depth": (int, 0, 100),
     "max_pages": (int, 1, 10_000_000),
@@ -79,62 +79,58 @@ def clean_settings(raw: dict) -> dict:
     return out
 
 
-def summarize(result: CrawlResult, elapsed: float) -> dict:
-    return {
-        "pages": len(result.pages),
-        "documents": len(result.documents),
-        "failures": len(result.failures),
-        "robots_skipped": len(result.skipped_by_robots),
-        "requests": result.requests,
-        "sitemap_urls": result.sitemap_urls,
-        "elapsed": round(elapsed, 1),
-        "doc_types": dict(Counter(d.doc_type for d in result.documents).most_common()),
-        "stopped_early": result.stopped_early,
-    }
-
-
-@dataclass
 class ScanJob:
-    id: str
-    target: str
-    seeds: list[str]
-    settings: dict
-    status: str = "running"            # running | done | stopped | error
-    error: str = ""
-    started_at: str = field(default_factory=_now)
-    started_mono: float = field(default_factory=time.monotonic)
-    finished_mono: float | None = None
-    events: list[dict] = field(default_factory=list)
-    events_dropped: int = 0            # events trimmed from the front of the list
-    issues: list[dict] = field(default_factory=list)   # failures and robots skips, in order
-    crawler: Crawler | None = None
-    thread: threading.Thread | None = None
+    """A scan running (or just finished) in this process."""
+
+    def __init__(self, scan_id: str, target: str, seeds: list[str], settings: dict,
+                 started_at: str, prior_elapsed: float = 0.0):
+        self.id = scan_id
+        self.target = target
+        self.seeds = seeds
+        self.settings = settings
+        self.started_at = started_at
+        self.prior_elapsed = prior_elapsed     # crawl time from earlier runs (resume)
+        self.status = "running"
+        self.error = ""
+        self.started_mono = time.monotonic()
+        self.finished_mono: float | None = None
+        self.events: list[dict] = []
+        self.events_dropped = 0
+        self.crawler: Crawler | None = None
+        self.thread: threading.Thread | None = None
 
     @property
     def elapsed(self) -> float:
         end = self.finished_mono or time.monotonic()
-        return end - self.started_mono
+        return self.prior_elapsed + (end - self.started_mono)
 
     def add_event(self, event: dict) -> None:
         if event["type"] == "fetching":
             return   # too chatty for the feed; "page" follows
-        if event["type"] == "failure":
-            self.issues.append({"url": event["url"], "reason": event["reason"], "kind": "failure"})
-        elif event["type"] == "skipped":
-            self.issues.append({"url": event["url"], "reason": event.get("reason") or "Blocked by robots.txt",
-                                "kind": "robots"})
-        event = {**event, "t": round(self.elapsed, 1)}
-        self.events.append(event)
+        self.events.append({**event, "t": round(self.elapsed, 1)})
         if len(self.events) > MAX_EVENTS:
             trim = len(self.events) - MAX_EVENTS
             del self.events[:trim]
             self.events_dropped += trim
 
+    def counters(self) -> dict:
+        """Live counts for the scan row, read from the crawler as it runs."""
+        r = self.crawler.result if self.crawler else None
+        if r is None:
+            return {}
+        requests = r.requests
+        if self.crawler and self.crawler.fetcher is not None and self.status == "running":
+            requests = (getattr(self.crawler, "_requests_before", 0)) + self.crawler.fetcher.requests_made
+        return {"pages": r.pages_count, "documents": r.documents_count, "failures": r.failures_count,
+                "robots_skipped": r.robots_skipped_count, "requests": requests,
+                "doc_checks": getattr(self.crawler, "_doc_checks", 0), "sitemap_urls": r.sitemap_urls,
+                "elapsed": round(self.elapsed, 1)}
+
 
 class ScanManager:
-    def __init__(self, store: ScanStore, allow_private: bool = False,
+    def __init__(self, db: Database, allow_private: bool = False,
                  transport: httpx.AsyncBaseTransport | None = None, resolver: Resolver = default_resolver):
-        self.store = store
+        self.db = db
         self.allow_private = allow_private
         self.transport = transport      # tests inject a fake website here
         self.resolver = resolver
@@ -142,53 +138,100 @@ class ScanManager:
         self._lock = threading.Lock()
 
     def _evict_finished(self) -> None:
-        """Keep memory bounded: finished scans beyond the most recent few are dropped from
-        memory (they're already saved to the database and are served from there)."""
         finished = [j for j in self.jobs.values() if j.status != "running"]
         finished.sort(key=lambda j: j.started_mono, reverse=True)
         for old in finished[KEEP_FINISHED_IN_MEMORY:]:
             if old.thread is None or not old.thread.is_alive():
                 self.jobs.pop(old.id, None)
 
+    def _running_count(self) -> int:
+        return sum(1 for j in self.jobs.values() if j.status == "running")
+
     def start(self, target: str, seeds: list[str], settings: dict) -> ScanJob:
-        # The whole check-and-register step holds the lock, so two "Start" clicks arriving at
-        # the same moment can't both slip under the running-scan limit.
         with self._lock:
-            running = sum(1 for j in self.jobs.values() if j.status == "running")
-            if running >= MAX_RUNNING:
-                raise TooManyScans(f"{running} scans are already running; stop one or wait for it to finish")
+            if self._running_count() >= MAX_RUNNING:
+                raise TooManyScans(f"{self._running_count()} scans are already running; "
+                                   "stop one or wait for it to finish")
             self._evict_finished()
-            job = ScanJob(id=uuid.uuid4().hex[:12], target=target, seeds=seeds or [target], settings=settings)
-            config = CrawlConfig(allow_private_networks=self.allow_private, **settings)
-            job.crawler = Crawler(config, transport=self.transport, resolver=self.resolver,
-                                  on_event=job.add_event)
-            self.store.create(job.id, target, {**settings, "seeds": job.seeds}, job.started_at)
-            self.jobs[job.id] = job
-        job.thread = threading.Thread(target=self._run, args=(job,), daemon=True, name=f"scan-{job.id}")
-        job.thread.start()
+            scan_id = uuid.uuid4().hex[:12]
+            job = ScanJob(scan_id, target, seeds or [target], settings, _now())
+            self.db.create_scan(scan_id, target, job.seeds, settings, job.started_at)
+            self.jobs[scan_id] = job
+        self._launch(job, resume=False)
         return job
 
-    def _run(self, job: ScanJob) -> None:
+    def resume(self, scan_id: str) -> ScanJob | None:
+        """Continue a scan that was interrupted (server stopped) or stopped by the user."""
+        with self._lock:
+            row = self.db.get_scan(scan_id)
+            if row is None or row["status"] not in ("interrupted", "stopped"):
+                return None
+            if scan_id in self.jobs and self.jobs[scan_id].status == "running":
+                return self.jobs[scan_id]
+            if self._running_count() >= MAX_RUNNING:
+                raise TooManyScans("too many scans are already running")
+            self._evict_finished()
+            job = ScanJob(scan_id, row["target"], row["seeds"], row["settings"], row["started_at"],
+                          prior_elapsed=row["elapsed"])
+            self.db.set_status(scan_id, status="running", error="", stopped_early="", finished_at=None)
+            self.jobs[scan_id] = job
+        self._launch(job, resume=True)
+        return job
+
+    def _launch(self, job: ScanJob, resume: bool) -> None:
+        config = CrawlConfig(allow_private_networks=self.allow_private, **job.settings)
+        sink = DbSink(self.db, job.id)
+        sink.counters = {}
+        if resume:
+            # Keep running totals (type counts) continuous across the resume.
+            sink._doc_types = self.db.doc_type_counts(job.id)
+        job.crawler = Crawler(config, transport=self.transport, resolver=self.resolver,
+                              on_event=job.add_event, sink=sink)
+        job.thread = threading.Thread(target=self._run, args=(job, sink, resume), daemon=True,
+                                      name=f"scan-{job.id}")
+        job.thread.start()
+
+    def _run(self, job: ScanJob, sink: DbSink, resume: bool) -> None:
         error = ""
         try:
-            result = asyncio.run(job.crawler.crawl(job.seeds))
+            resume_state = self.db.resume_state(job.id) if resume else None
+            # Keep the scan row's counters current on every flush, so an interrupted scan
+            # resumes from accurate numbers.
+            sink.counters = {}
+            self._attach_counters(job, sink)
+            result = asyncio.run(job.crawler.crawl(job.seeds, resume=resume_state))
             status = "stopped" if result.stopped_early == "stopped by user" else "done"
+            stopped_early = result.stopped_early
         except Exception as exc:
-            status, error = "error", f"{type(exc).__name__}: {exc}"
+            status, error, stopped_early = "error", f"{type(exc).__name__}: {exc}", ""
             log.exception("scan %s failed", job.id)
         job.finished_mono = time.monotonic()
-        # Save first, announce second: the scan only shows as finished once its results are in the
-        # database, so a reload or restart can never catch it half-saved. Partial results are kept.
-        partial = job.crawler.result
-        summary = summarize(partial, job.elapsed) if partial else {}
+        # Flush everything and record the final status in one go. The scan shows as finished
+        # only once its rows and counters are saved, so a reload can't catch it half-written.
         try:
-            self.store.finish(job.id, status, summary, partial.to_dict() if partial else None,
-                              error or None, _now())
-        except Exception as exc:   # e.g. disk full: keep the in-memory copy and say so
-            error = (error + "; " if error else "") + f"results could not be saved to the database: {exc}"
+            final = {**job.counters(), "status": status, "error": error, "stopped_early": stopped_early,
+                     "finished_at": _now()}
+            sink.flush(**final)
+        except Exception as exc:
+            error = (error + "; " if error else "") + f"results could not be saved: {exc}"
             log.exception("saving scan %s failed", job.id)
+            try:
+                self.db.set_status(job.id, status=status, error=error, finished_at=_now())
+            except Exception:
+                log.exception("could not even record the failure for scan %s", job.id)
         job.error = error
         job.status = status
+
+    def _attach_counters(self, job: ScanJob, sink: DbSink) -> None:
+        # DbSink.flush merges whatever is in sink.counters; refresh it from the live crawler
+        # each time a flush happens by wrapping flush. Cheap and keeps the row current.
+        original_maybe = sink._maybe_flush
+
+        def refresh_then_flush() -> None:
+            sink.counters = job.counters()
+            original_maybe()
+
+        sink._maybe_flush = refresh_then_flush
 
     def stop(self, scan_id: str) -> bool:
         job = self.jobs.get(scan_id)
@@ -197,58 +240,63 @@ class ScanManager:
         job.crawler.request_stop()
         return True
 
+    # ---------------------------------------------------------------- reads
+
     def snapshot(self, scan_id: str, cursors: dict[str, int]) -> dict | None:
-        """Everything the interface needs for one poll. `cursors` say how many events,
-        documents, pages and issues the browser already has."""
         job = self.jobs.get(scan_id)
-        if job is None:
-            return self._snapshot_from_store(scan_id, cursors)
-        result = job.crawler.result
-        if result is None:   # crawl thread hasn't initialised yet
-            result = CrawlResult(seeds=job.seeds)
-        fetcher = job.crawler.fetcher
-        summary = summarize(result, job.elapsed)
-        if fetcher is not None and job.status == "running":
-            summary["requests"] = fetcher.requests_made
-        ev_from = max(cursors.get("events", 0) - job.events_dropped, 0)
+        if job is not None and job.crawler is not None and job.crawler.result is not None:
+            counts = job.counters()
+            status, error = job.status, job.error
+            stopped_early = job.crawler.result.stopped_early
+            doc_types = job.crawler.sink._doc_types if hasattr(job.crawler, "sink") else {}
+            max_pages = job.crawler.config.max_pages
+            settings = {**job.settings, "seeds": job.seeds}
+            target, started_at = job.target, job.started_at
+            ev_from = max(cursors.get("events", 0) - job.events_dropped, 0)
+            events, events_total = job.events[ev_from:], job.events_dropped + len(job.events)
+        else:
+            row = self.db.get_scan(scan_id)
+            if row is None:
+                return None
+            counts = {k: row[k] for k in ("pages", "documents", "failures", "robots_skipped",
+                                          "requests", "elapsed", "sitemap_urls")}
+            status, error, stopped_early = row["status"], row["error"], row["stopped_early"]
+            doc_types, max_pages = row["doc_types"], row["settings"].get("max_pages", CrawlConfig.max_pages)
+            settings, target, started_at = row["settings"], row["target"], row["started_at"]
+            events, events_total = [], 0
+
+        summary = {k: counts.get(k, 0) for k in ("pages", "documents", "failures", "robots_skipped",
+                                                 "requests", "sitemap_urls")}
+        summary["elapsed"] = counts.get("elapsed", 0)
+        summary["doc_types"] = dict(sorted(doc_types.items(), key=lambda kv: kv[1], reverse=True))
+        summary["stopped_early"] = stopped_early
+
+        docs = self.db.rows_after(DocumentRow, scan_id, cursors.get("documents", 0))
+        pages = self.db.rows_after(PageRow, scan_id, cursors.get("pages", 0))
+        issues = self.db.rows_after(IssueRow, scan_id, cursors.get("issues", 0))
+        for rows in (docs, pages, issues):
+            for r in rows:
+                r.pop("scan_id", None)
         return {
-            "id": job.id, "target": job.target, "status": job.status, "error": job.error,
-            "started_at": job.started_at, "settings": {**job.settings, "seeds": job.seeds},
-            "max_pages": job.crawler.config.max_pages,
-            "summary": summary,
-            "events": job.events[ev_from:],
-            "events_total": job.events_dropped + len(job.events),
-            **_slices(result, cursors),
-            "issues": job.issues[cursors.get("issues", 0):],
+            "id": scan_id, "target": target, "status": status, "error": error,
+            "started_at": started_at, "settings": settings, "max_pages": max_pages,
+            "resumable": status in ("interrupted", "stopped"),
+            "summary": summary, "events": events, "events_total": events_total,
+            "documents": docs, "pages": pages, "issues": issues,
         }
 
-    def _snapshot_from_store(self, scan_id: str, cursors: dict[str, int]) -> dict | None:
-        row = self.store.get(scan_id)
-        if row is None:
-            return None
-        result = row["result"] or {"documents": [], "pages": [], "failures": [], "skipped_by_robots": []}
-        return {
-            "id": row["id"], "target": row["target"], "status": row["status"], "error": row["error"] or "",
-            "started_at": row["started_at"], "settings": row["settings"],
-            "max_pages": row["settings"].get("max_pages", CrawlConfig.max_pages),
-            "summary": row["summary"], "events": [], "events_total": 0,
-            **_slices_from_dict(result, cursors),
-        }
+    def list_scans(self, limit: int = 50) -> list[dict]:
+        rows = self.db.list_scans(limit)
+        out = []
+        for r in rows:
+            out.append({"id": r["id"], "target": r["target"], "status": r["status"],
+                        "started_at": r["started_at"],
+                        "summary": {"documents": r["documents"], "pages": r["pages"]}})
+        return out
 
-
-def _issues(failures, skipped) -> list[dict]:
-    return [{"url": f["url"], "reason": f["reason"], "kind": "failure"} for f in failures] + \
-           [{"url": u, "reason": "Blocked by robots.txt", "kind": "robots"} for u in skipped]
-
-
-def _slices(result: CrawlResult, cursors: dict[str, int]) -> dict:
-    docs = result.documents[cursors.get("documents", 0):]
-    pages = result.pages[cursors.get("pages", 0):]
-    return {"documents": [asdict(d) for d in docs], "pages": [asdict(p) for p in pages]}
-
-
-def _slices_from_dict(result: dict, cursors: dict[str, int]) -> dict:
-    issues = _issues(result.get("failures", []), result.get("skipped_by_robots", []))
-    return {"documents": result.get("documents", [])[cursors.get("documents", 0):],
-            "pages": result.get("pages", [])[cursors.get("pages", 0):],
-            "issues": issues[cursors.get("issues", 0):]}
+    def delete(self, scan_id: str) -> bool:
+        job = self.jobs.get(scan_id)
+        if job and job.status == "running":
+            raise RuntimeError("stop the scan before deleting it")
+        self.jobs.pop(scan_id, None)
+        return self.db.delete_scan(scan_id)
