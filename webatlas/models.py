@@ -46,11 +46,17 @@ class Failure:
 
 @dataclass
 class CrawlResult:
+    """Counts are always kept. The lists are filled only when results stay in memory
+    (MemorySink); with a database sink they stay empty and the rows live in the database."""
     seeds: list[str]
     pages: list[Page] = field(default_factory=list)
     documents: list[Document] = field(default_factory=list)
     failures: list[Failure] = field(default_factory=list)
     skipped_by_robots: list[str] = field(default_factory=list)
+    pages_count: int = 0
+    documents_count: int = 0
+    failures_count: int = 0
+    robots_skipped_count: int = 0
     sitemap_urls: int = 0
     requests: int = 0              # HTTP requests sent (including retries and robots/sitemaps)
     stopped_early: str = ""        # why the crawl ended before the queue was empty, if it did

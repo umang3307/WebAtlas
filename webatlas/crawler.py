@@ -22,7 +22,6 @@ import asyncio
 import itertools
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
@@ -35,23 +34,13 @@ from webatlas.models import CrawlResult, Document, Failure, Page
 from webatlas.render import Renderer, RenderUnavailable
 from webatlas.robots import RobotsCache
 from webatlas.safety import Resolver, UnsafeTargetError, default_resolver
+from webatlas.sinks import MemorySink, QueueItem, ResultSink, ResumeState
 from webatlas.sitemap import collect_sitemap_urls
 from webatlas.urls import file_name, in_scope, looks_like_trap, normalize_url
 
 EventCallback = Callable[[dict], None]
 
 PAGE, DOC = "page", "doc"
-
-
-@dataclass(order=True)
-class _Item:
-    priority: int
-    seq: int
-    kind: str = ""
-    url: str = ""
-    depth: int = 0
-    source_page: str = ""
-    link_text: str = ""
 
 
 def _under(count: int, limit: int | float | None) -> bool:
@@ -70,11 +59,14 @@ class Crawler:
         transport: httpx.AsyncBaseTransport | None = None,
         resolver: Resolver = default_resolver,
         on_event: EventCallback | None = None,
+        sink: ResultSink | None = None,
     ):
+        """`sink` receives every result; by default they're kept in memory on the CrawlResult."""
         self.config = config or CrawlConfig()
         self.transport = transport
         self.resolver = resolver
         self.on_event = on_event or (lambda event: None)
+        self._sink_override = sink
         self._stop_requested = False
         self.result: CrawlResult | None = None
         self.fetcher: Fetcher | None = None
@@ -86,14 +78,17 @@ class Crawler:
 
     # ------------------------------------------------------------------ public
 
-    async def crawl(self, seeds: list[str]) -> CrawlResult:
+    async def crawl(self, seeds: list[str], resume: ResumeState | None = None) -> CrawlResult:
+        """Crawl from `seeds`. With `resume`, continue an interrupted crawl: already-seen URLs
+        are not fetched again and only the work that was still queued is done."""
         cfg = self.config
         normalized = [u for u in (normalize_url(s) for s in seeds) if u]
         if not normalized:
             raise ValueError("no valid http(s) seed URLs given")
         self.root = normalized[0]
         self.result = CrawlResult(seeds=normalized, started_at=_now())
-        self._queue: asyncio.PriorityQueue[_Item] = asyncio.PriorityQueue()
+        self.sink: ResultSink = self._sink_override or MemorySink(self.result)
+        self._queue: asyncio.PriorityQueue[QueueItem] = asyncio.PriorityQueue()
         self._seq = itertools.count()
         self._seen: set[str] = set()
         self._doc_keys: set[str] = set()
@@ -101,21 +96,41 @@ class Crawler:
         self._renderer: Renderer | None = None
         self._render_ok = cfg.render_js
         self._doc_checks = 0
+        self._requests_before = 0
+        self._sitemap_done = False
         self._deadline = time.monotonic() + cfg.max_duration if cfg.max_duration else None
+
+        if resume is not None:
+            self._seen = set(resume.seen)
+            self._doc_keys = set(resume.doc_keys)
+            self._pages_reserved = resume.pages_done
+            self._doc_checks = resume.doc_checks
+            self._requests_before = resume.requests
+            self._sitemap_done = resume.sitemap_done
+            r = self.result
+            r.pages_count, r.documents_count = resume.pages_done, resume.documents_done
+            r.failures_count, r.robots_skipped_count = resume.failures, resume.robots_skipped
+            r.sitemap_urls = resume.sitemap_urls
+            self._sitemap_count = resume.sitemap_urls
 
         async with Fetcher(cfg, transport=self.transport, resolver=self.resolver) as fetcher:
             self.fetcher = fetcher
             self.robots = RobotsCache(fetcher, cfg.user_agent, enabled=cfg.respect_robots,
                                       on_note=lambda message: self._emit("info", message=message))
 
-            for seed in normalized:
-                self._enqueue(PAGE, seed, depth=0)
+            if resume is None:
+                for seed in normalized:
+                    self._enqueue(PAGE, seed, depth=0)
+            else:
+                for item in resume.pending:   # already in _seen; put straight back on the queue
+                    item.seq = next(self._seq)
+                    self._queue.put_nowait(item)
 
             # Crawling starts right away; the sitemap is read alongside and feeds the same queue.
             workers = [asyncio.create_task(self._worker()) for _ in range(max(1, cfg.concurrency))]
             tasks = list(workers)
             try:
-                if cfg.use_sitemaps:
+                if cfg.use_sitemaps and not self._sitemap_done:
                     sitemap_task = asyncio.create_task(self._queue_sitemap_urls())
                     tasks.append(sitemap_task)
                     await self._until_done_or_stopped(sitemap_task)
@@ -132,10 +147,10 @@ class Crawler:
                 if self._renderer:
                     await self._renderer.close()
 
-        self.result.requests = fetcher.requests_made
+        self.result.requests = self._requests_before + fetcher.requests_made
         self.result.finished_at = _now()
-        self._emit("done", pages=len(self.result.pages), documents=len(self.result.documents),
-                   failures=len(self.result.failures))
+        self._emit("done", pages=self.result.pages_count, documents=self.result.documents_count,
+                   failures=self.result.failures_count)
         return self.result
 
     # ------------------------------------------------------------------ queue
@@ -149,7 +164,9 @@ class Crawler:
         # Documents are cheap to check, so they go first. Pages are breadth-first; sitemap
         # pages come after menu links of the same depth.
         priority = -1 if kind == DOC else depth * 2 + (1 if from_sitemap else 0)
-        self._queue.put_nowait(_Item(priority, next(self._seq), kind, url, depth, source_page, link_text))
+        item = QueueItem(priority, next(self._seq), kind, url, depth, source_page, link_text, from_sitemap)
+        self.sink.enqueued(item)
+        self._queue.put_nowait(item)
 
     async def _until_done_or_stopped(self, task: asyncio.Task) -> None:
         """Wait for `task`, checking four times a second whether to stop early."""
@@ -159,7 +176,7 @@ class Crawler:
                 return
 
     async def _queue_sitemap_urls(self) -> None:
-        self._sitemap_count = 0
+        self._sitemap_count = getattr(self, "_sitemap_count", 0)
 
         def take(urls: list[str]) -> None:
             for raw in urls:
@@ -178,11 +195,13 @@ class Crawler:
                                        on_batch=take, should_stop=self._out_of_time)
         except (FetchError, UnsafeTargetError) as exc:
             self._emit("info", message=f"sitemap skipped: {exc}")
-            return
         except Exception as exc:   # a broken sitemap must never stop the crawl
             self._emit("info", message=f"sitemap skipped: unexpected {type(exc).__name__}: {exc}")
-            return
-        self._emit("info", message=f"sitemap listed {self._sitemap_count} in-scope URLs")
+        else:
+            self._emit("info", message=f"sitemap listed {self._sitemap_count} in-scope URLs")
+        if not self._out_of_time():   # finished (or failed for good), not cut short: don't redo on resume
+            self._sitemap_done = True
+            self.sink.sitemap_done(self._sitemap_count)
 
     def _out_of_time(self) -> bool:
         if self._stop_requested:
@@ -202,21 +221,24 @@ class Crawler:
             item = await self._queue.get()
             try:
                 if self._out_of_time():
-                    continue   # drain the queue quickly; finally: still marks the item done
-                if item.kind == PAGE:
-                    await self._process_page(item)
-                else:
-                    await self._process_doc(item)
-            except (FetchError, UnsafeTargetError) as exc:
-                self._fail(item.url, str(exc))
-            except Exception as exc:  # never let one bad page kill a worker
-                self._fail(item.url, f"unexpected {type(exc).__name__}: {exc}")
+                    continue   # leave it unprocessed: a resumed crawl will pick it up
+                try:
+                    if item.kind == PAGE:
+                        await self._process_page(item)
+                    else:
+                        await self._process_doc(item)
+                except (FetchError, UnsafeTargetError) as exc:
+                    self._fail(item.url, str(exc))
+                except Exception as exc:  # never let one bad page kill a worker
+                    self._fail(item.url, f"unexpected {type(exc).__name__}: {exc}")
+                # Reached only when the item was really handled (not cancelled by Stop).
+                self.sink.processed(item)
             finally:
                 self._queue.task_done()
 
     # ------------------------------------------------------------------ pages
 
-    async def _process_page(self, item: _Item) -> None:
+    async def _process_page(self, item: QueueItem) -> None:
         cfg = self.config
         if not _under(self._pages_reserved, cfg.max_pages):
             return
@@ -227,7 +249,7 @@ class Crawler:
             return
         self._pages_reserved += 1
         self._emit("fetching", url=item.url, depth=item.depth,
-                   pages_done=len(self.result.pages), max_pages=cfg.max_pages)
+                   pages_done=self.result.pages_count, max_pages=cfg.max_pages)
         response = await self.fetcher.get(item.url)
 
         if not response.ok:
@@ -279,9 +301,10 @@ class Crawler:
         page = Page(url=final, depth=item.depth, status=response.status, title=title,
                     links_found=len(links), documents_found=docs_here, rendered=rendered,
                     found_on=item.source_page)
-        self.result.pages.append(page)
+        self.result.pages_count += 1
+        self.sink.page(page)
         self._emit("page", url=final, depth=item.depth, title=title, links=len(links), found_on=item.source_page,
-                   documents=docs_here, pages_done=len(self.result.pages), max_pages=cfg.max_pages)
+                   documents=docs_here, pages_done=self.result.pages_count, max_pages=cfg.max_pages)
 
     async def _render(self, url: str):
         try:
@@ -299,9 +322,9 @@ class Crawler:
 
     # ------------------------------------------------------------------ documents
 
-    async def _process_doc(self, item: _Item) -> None:
+    async def _process_doc(self, item: QueueItem) -> None:
         cfg = self.config
-        if not _under(len(self.result.documents), cfg.max_documents):
+        if not _under(self.result.documents_count, cfg.max_documents):
             return
         if not await self.robots.allowed(item.url):
             self._skip_robots(item.url)
@@ -336,9 +359,9 @@ class Crawler:
             return
         await self._record_document(item, response, *doc)
 
-    async def _record_document(self, item: _Item, response: FetchResult, doc_type: str, detected_by: str) -> None:
+    async def _record_document(self, item: QueueItem, response: FetchResult, doc_type: str, detected_by: str) -> None:
         cfg = self.config
-        if not _under(len(self.result.documents), cfg.max_documents):
+        if not _under(self.result.documents_count, cfg.max_documents):
             return
         final = normalize_url(response.final_url) or item.url
 
@@ -367,37 +390,42 @@ class Crawler:
             sha256=digest,
             detected_by=detected_by,
         )
-        self.result.documents.append(document)
-        self._emit("document", url=final, title=document.title, doc_type=doc_type,
-                   detected_by=detected_by, documents_done=len(self.result.documents))
+        self._add_document(document)
 
-    def _record_unverified(self, item: _Item) -> None:
+    def _record_unverified(self, item: QueueItem) -> None:
         key = f"url:{item.url}"
-        if key in self._doc_keys or not _under(len(self.result.documents), self.config.max_documents):
+        if key in self._doc_keys or not _under(self.result.documents_count, self.config.max_documents):
             return
         self._doc_keys.add(key)
         document = Document(url=item.url, final_url=item.url, title=item.link_text or file_name(item.url),
                             source_page=item.source_page, doc_type=doc_type_from_url(item.url) or "unknown",
                             detected_by="extension-unverified")
-        self.result.documents.append(document)
-        self._emit("document", url=item.url, title=document.title, doc_type=document.doc_type,
-                   detected_by=document.detected_by, documents_done=len(self.result.documents))
+        self._add_document(document)
 
     # ------------------------------------------------------------------ helpers
 
+    def _add_document(self, document: Document) -> None:
+        self.result.documents_count += 1
+        self.sink.document(document)
+        self._emit("document", url=document.final_url, title=document.title, doc_type=document.doc_type,
+                   detected_by=document.detected_by, documents_done=self.result.documents_count)
+
     def _skip_robots(self, url: str) -> None:
-        self.result.skipped_by_robots.append(url)
-        self._emit("skipped", url=url, reason=self.robots.why_blocked(url))
+        reason = self.robots.why_blocked(url)
+        self.result.robots_skipped_count += 1
+        self.sink.robots_skip(url, reason)
+        self._emit("skipped", url=url, reason=reason)
 
     def _skip_trap(self, url: str) -> None:
         key = f"trap:{url}"
         if key in self._seen:
             return
         self._seen.add(key)
-        self._fail(url, "skipped: looks like a crawler trap (URL too long or path repeats itself)")
+        self._fail(url, "skipped: looks like a crawler trap (URL too long or path repeats itself)", kind="trap")
 
-    def _fail(self, url: str, reason: str) -> None:
-        self.result.failures.append(Failure(url=url, reason=reason))
+    def _fail(self, url: str, reason: str, kind: str = "failure") -> None:
+        self.result.failures_count += 1
+        self.sink.failure(Failure(url=url, reason=reason), kind)
         self._emit("failure", url=url, reason=reason)
 
     def _emit(self, event_type: str, **data) -> None:
