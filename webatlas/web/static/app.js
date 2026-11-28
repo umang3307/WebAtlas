@@ -64,6 +64,7 @@
       typeCounts: new Map(),   // kept up to date as documents arrive, instead of recounting
       findings: [], findingLimit: PAGE_SIZE, sevFilter: new Set(), analysis: {},
       ai: {}, asking: false,
+      revealSecrets: false, revealedRows: new Set(),
     };
   }
 
@@ -710,13 +711,39 @@
     const rows = scan.sevFilter.size
       ? scan.findings.filter((f) => scan.sevFilter.has(f.severity))
       : scan.findings;
+    // A global reveal/hide toggle, shown only when there are secrets to reveal.
+    const anySecret = scan.findings.some((f) => f.secret);
+    const revealBtn = $("revealSecretsBtn");
+    revealBtn.hidden = !anySecret;
+    revealBtn.setAttribute("aria-pressed", String(scan.revealSecrets));
+    revealBtn.textContent = scan.revealSecrets ? "Hide secrets" : "Reveal secrets";
+
     const shown = rows.slice(0, scan.findingLimit);
-    $("findingRows").replaceChildren(...shown.map((f) => el("tr", {},
-      el("td", {}, el("span", { class: `sev-badge sev-${f.severity}`, text: SEV_LABEL[f.severity] || f.severity })),
-      el("td", {}, el("div", { class: "cell-title", text: f.title }),
-        f.count > 1 ? el("span", { class: "finding-count", text: `${f.count}×` }) : null),
-      el("td", {}, link(f.url, shortPath(f.url), "cell-url")),
-      el("td", {}, el("span", { class: "finding-detail", text: f.detail })))));
+    $("findingRows").replaceChildren(...shown.map((f) => {
+      const detailCell = el("td", {});
+      if (f.secret) {
+        const revealed = scan.revealSecrets || scan.revealedRows.has(f.id);
+        detailCell.append(
+          el("span", { class: "finding-detail" + (revealed ? " revealed" : ""),
+            text: revealed ? f.secret : f.detail }));
+        const toggle = el("button", { type: "button", class: "reveal-one",
+          "aria-label": revealed ? "Hide value" : "Reveal value", text: revealed ? "Hide" : "Reveal" });
+        toggle.addEventListener("click", () => {
+          if (scan.revealedRows.has(f.id)) scan.revealedRows.delete(f.id);
+          else scan.revealedRows.add(f.id);
+          scheduleRender(["findings"]);
+        });
+        detailCell.append(toggle);
+      } else {
+        detailCell.append(el("span", { class: "finding-detail", text: f.detail }));
+      }
+      return el("tr", {},
+        el("td", {}, el("span", { class: `sev-badge sev-${f.severity}`, text: SEV_LABEL[f.severity] || f.severity })),
+        el("td", {}, el("div", { class: "cell-title", text: f.title }),
+          f.count > 1 ? el("span", { class: "finding-count", text: `${f.count}×` }) : null),
+        el("td", {}, link(f.url, shortPath(f.url), "cell-url")),
+        detailCell);
+    }));
 
     const empty = $("findingEmpty");
     if (!scan.findings.length) {
@@ -1033,6 +1060,11 @@
     $("docMore").addEventListener("click", () => { scan.docLimit += PAGE_SIZE; scheduleRender(["documents"]); });
     $("pageMore").addEventListener("click", () => { scan.pageLimit += PAGE_SIZE; scheduleRender(["pages"]); });
     $("findingMore").addEventListener("click", () => { scan.findingLimit += PAGE_SIZE; scheduleRender(["findings"]); });
+    $("revealSecretsBtn").addEventListener("click", () => {
+      scan.revealSecrets = !scan.revealSecrets;
+      scan.revealedRows.clear();   // the global toggle takes over from per-row choices
+      scheduleRender(["findings"]);
+    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("sectionsPanel").hidden) $("sectionsPanel").hidden = true;
     });

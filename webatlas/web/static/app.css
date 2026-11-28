@@ -468,7 +468,14 @@ a.cell-url:hover, a.cell-src:hover { color: var(--sea); text-decoration: underli
 .findings th:nth-child(4) { width: 30%; }
 .finding-detail { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: var(--step--1);
   overflow-wrap: anywhere; color: var(--ink); }
+.finding-detail.revealed { color: var(--red, #b42318); background: rgba(180, 35, 24, .08);
+  padding: 0 .25rem; border-radius: 3px; }
 .finding-count { color: var(--ink-soft); font-weight: 600; }
+.reveal-one { margin-left: .5rem; font-size: var(--step--2); padding: .05rem .4rem; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: var(--radius-s); background: transparent;
+  color: var(--ink-soft); white-space: nowrap; }
+.reveal-one:hover { color: var(--ink); background: rgba(20, 40, 61, .06); }
+.reveal-all[aria-pressed="true"] { color: var(--red, #b42318); }
 @media (max-width: 760px) {
   .findings th:nth-child(3), .findings td:nth-child(3) { display: none; }
 }

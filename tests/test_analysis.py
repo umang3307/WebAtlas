@@ -96,11 +96,26 @@ def test_secret_rules_fire(text, rule, severity):
     assert hits and hits[0].severity == severity
 
 
-def test_secret_values_are_masked_not_stored():
+def test_secret_masked_in_detail_full_value_available_for_reveal():
+    # detail is always safe to show (masked); the full value is kept separately so the console
+    # can offer reveal/hide. Masking is the default display, not a wall.
     secret = AWS_KEY
     findings = by_rule(scan_document(ExtractedDoc(text=f"aws {secret}")), "aws-access-key")
-    assert secret not in findings[0].detail
+    assert secret not in findings[0].detail          # detail stays masked
     assert findings[0].detail.startswith("AKI") and "***" in findings[0].detail
+    assert findings[0].secret == secret              # full value available for reveal
+
+
+def test_non_secret_findings_have_no_secret_value():
+    # metadata/email/path findings aren't masked, so they carry no separate reveal value.
+    findings = scan_document(ExtractedDoc(text=r"path C:\Users\admin\report.docx email real@acme.com"))
+    assert findings and all(f.secret == "" for f in findings)
+
+
+def test_generic_secret_keeps_full_value_for_reveal():
+    hits = by_rule(scan_document(ExtractedDoc(text='password = "Tr0ub4dor&3xKf"')), "possible-secret")
+    assert hits and "Tr0ub4dor&3xKf" not in hits[0].detail   # masked in detail
+    assert "Tr0ub4dor&3xKf" in hits[0].secret                # full value for reveal
 
 
 def test_generic_secret_skips_placeholders():

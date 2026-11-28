@@ -172,7 +172,8 @@ class FindingRow(Base):
     severity: Mapped[str] = mapped_column(String(10))
     title: Mapped[str] = mapped_column(Text)
     location: Mapped[str] = mapped_column(String(48), default="")
-    detail: Mapped[str] = mapped_column(Text, default="")
+    detail: Mapped[str] = mapped_column(Text, default="")   # safe to show: secrets masked here
+    secret: Mapped[str] = mapped_column(Text, default="")   # full value for reveal/hide (secrets only)
     count: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (Index("ix_findings_scan", "scan_id", "id"),
                       Index("ix_findings_sev", "scan_id", "severity"))
@@ -251,22 +252,25 @@ class Database:
 
     def _add_missing_columns(self) -> None:
         """create_all never alters an existing table, so a database made by an earlier WebAtlas
-        version is missing columns added since (e.g. the Phase 3 analysis columns). Add them."""
+        version is missing columns added since (e.g. the Phase 3 analysis columns, or the Phase 3
+        findings 'secret' column). Add them for every table that has gained columns over time."""
         insp = inspect(self.engine)
-        if "scans" not in insp.get_table_names():
-            return
-        have = {c["name"] for c in insp.get_columns("scans")}
-        for col in Scan.__table__.columns:
-            if col.name in have:
+        names = set(insp.get_table_names())
+        for table_name, model in (("scans", Scan), ("documents", DocumentRow), ("findings", FindingRow)):
+            if table_name not in names:
                 continue
-            default = col.default.arg if col.default is not None else None
-            coltype = col.type.compile(self.engine.dialect)
-            ddl = f'ALTER TABLE scans ADD COLUMN "{col.name}" {coltype}'
-            if default is not None:
-                literal = f"'{default}'" if isinstance(default, str) else default
-                ddl += f" DEFAULT {literal}"
-            with self.engine.begin() as conn:
-                conn.execute(text(ddl))
+            have = {c["name"] for c in insp.get_columns(table_name)}
+            for col in model.__table__.columns:
+                if col.name in have:
+                    continue
+                default = col.default.arg if col.default is not None else None
+                coltype = col.type.compile(self.engine.dialect)
+                ddl = f'ALTER TABLE {table_name} ADD COLUMN "{col.name}" {coltype}'
+                if default is not None:
+                    literal = f"'{default}'" if isinstance(default, str) else default
+                    ddl += f" DEFAULT {literal}"
+                with self.engine.begin() as conn:
+                    conn.execute(text(ddl))
 
     def _import_legacy(self, row: dict) -> None:
         settings = json.loads(row.get("settings") or "{}")
