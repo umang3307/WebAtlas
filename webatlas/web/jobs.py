@@ -464,6 +464,12 @@ class ScanManager:
             for r in rows:
                 r.pop("scan_id", None)
 
+        # Passive security findings are low-volume and deduplicated, so send the whole set.
+        security = self.db.all_security(scan_id)
+        for r in security:
+            r.pop("scan_id", None)
+        security_counts = self.db.security_severity_counts(scan_id)
+
         # Analysis fields always come from the scan row (the analyzer writes them there).
         arow = self.db.get_scan(scan_id)
         analysis = {
@@ -490,6 +496,7 @@ class ScanManager:
             # The index is built from analysed text, so it needs analysis to have produced some.
             "indexable": analysis["analyzed"] > 0 and analysis["status"] != "running",
             "summary": summary, "analysis": analysis,
+            "security": security, "security_counts": security_counts,
             "events": events, "events_total": events_total,
             "documents": docs, "pages": pages, "issues": issues, "findings": findings,
         }

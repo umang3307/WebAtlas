@@ -179,6 +179,23 @@ class FindingRow(Base):
                       Index("ix_findings_sev", "scan_id", "severity"))
 
 
+class SecurityRow(Base):
+    """A passive security finding, deduplicated per (scan, rule, host) with an occurrence count —
+    a missing header is a property of the server, not of each page."""
+    __tablename__ = "security"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
+    rule: Mapped[str] = mapped_column(String(48))
+    severity: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    host: Mapped[str] = mapped_column(String(255), default="")
+    example_url: Mapped[str] = mapped_column(Text, default="")
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (UniqueConstraint("scan_id", "rule", "host", name="uq_security"),
+                      Index("ix_security_scan", "scan_id", "id"))
+
+
 class FrontierRow(Base):
     """Every URL a crawl queued, and whether it was handled. Used only to resume."""
     __tablename__ = "frontier"
@@ -369,6 +386,39 @@ class Database:
         with self.engine.begin() as conn:
             conn.execute(delete(FindingRow).where(FindingRow.scan_id == scan_id))
 
+    # ------------------------------------------------- passive security findings
+
+    def add_security(self, scan_id: str, records: dict) -> None:
+        """Upsert deduplicated security findings, adding to the stored count. `records` maps
+        (rule, host) -> {severity, title, detail, example_url, count-delta}."""
+        if not records:
+            return
+        with self.engine.begin() as conn:
+            for (rule, host), e in records.items():
+                res = conn.execute(update(SecurityRow)
+                                   .where(SecurityRow.scan_id == scan_id, SecurityRow.rule == rule,
+                                          SecurityRow.host == host)
+                                   .values(count=SecurityRow.count + e["count"]))
+                if res.rowcount == 0:
+                    conn.execute(insert(SecurityRow).values(
+                        scan_id=scan_id, rule=rule, host=host, severity=e["severity"],
+                        title=e["title"], detail=e["detail"], example_url=e["example_url"],
+                        count=e["count"]))
+
+    def all_security(self, scan_id: str) -> list[dict]:
+        """Every security finding for a scan (low-volume; returned whole, not by cursor)."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(SecurityRow).where(SecurityRow.scan_id == scan_id)
+                                .order_by(SecurityRow.id)).mappings().all()
+        return [dict(r) for r in rows]
+
+    def security_severity_counts(self, scan_id: str) -> dict[str, int]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(SecurityRow.severity, func.count())
+                                .where(SecurityRow.scan_id == scan_id)
+                                .group_by(SecurityRow.severity)).all()
+        return {sev: int(n) for sev, n in rows}
+
     # ---------------------------------------------------------------- AI layer
 
     def store_content(self, rows: list[dict]) -> None:
@@ -481,12 +531,25 @@ class DbSink:
         self._queued: list[dict] = []
         self._done: list[tuple[str, str]] = []
         self._doc_types: dict[str, int] = {}
+        self._security: dict[tuple[str, str], dict] = {}   # (rule, host) -> delta record
         self._sitemap_urls: int | None = None
         self._last_flush = time.monotonic()
         self.counters: dict = {}
 
+    def security(self, finding) -> None:
+        key = (finding.rule, finding.host)
+        with self._lock:
+            entry = self._security.get(key)
+            if entry:
+                entry["count"] += 1
+            else:
+                self._security[key] = {"severity": finding.severity, "title": finding.title,
+                                       "detail": finding.detail, "example_url": finding.url, "count": 1}
+        self._maybe_flush()
+
     def _maybe_flush(self) -> None:
-        pending = len(self._pages) + len(self._docs) + len(self._issues) + len(self._queued) + len(self._done)
+        pending = (len(self._pages) + len(self._docs) + len(self._issues) + len(self._queued)
+                   + len(self._done) + len(self._security))
         if pending >= self.batch_size or time.monotonic() - self._last_flush >= self.interval:
             self.flush()
 
@@ -535,6 +598,7 @@ class DbSink:
             queued, done = self._queued, self._done
             self._pages, self._docs, self._issues, self._queued, self._done = [], [], [], [], []
             doc_types = dict(self._doc_types)
+            security, self._security = self._security, {}
             sitemap_urls, self._sitemap_urls = self._sitemap_urls, None
             counters = dict(self.counters)
             self._last_flush = time.monotonic()
@@ -553,6 +617,15 @@ class DbSink:
                     conn.execute(update(FrontierRow).where(FrontierRow.scan_id == self.scan_id,
                                                            FrontierRow.kind == kind,
                                                            FrontierRow.url.in_(urls[i:i + 500])).values(done=True))
+            for (rule, host), e in security.items():
+                res = conn.execute(update(SecurityRow)
+                                   .where(SecurityRow.scan_id == self.scan_id, SecurityRow.rule == rule,
+                                          SecurityRow.host == host)
+                                   .values(count=SecurityRow.count + e["count"]))
+                if res.rowcount == 0:
+                    conn.execute(insert(SecurityRow).values(
+                        scan_id=self.scan_id, rule=rule, host=host, severity=e["severity"],
+                        title=e["title"], detail=e["detail"], example_url=e["example_url"], count=e["count"]))
             values = {**counters, **scan_values}
             if doc_types:
                 values["doc_types"] = json.dumps(doc_types)

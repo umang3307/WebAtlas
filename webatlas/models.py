@@ -53,6 +53,7 @@ class CrawlResult:
     documents: list[Document] = field(default_factory=list)
     failures: list[Failure] = field(default_factory=list)
     skipped_by_robots: list[str] = field(default_factory=list)
+    security: list = field(default_factory=list)   # deduplicated passive security findings (_Rec)
     pages_count: int = 0
     documents_count: int = 0
     failures_count: int = 0

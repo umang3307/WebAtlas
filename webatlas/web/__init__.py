@@ -314,6 +314,13 @@ def create_app(
                     yield ("" if first else ",") + json.dumps(r)
                     first = False
                 yield "]"
+            yield ', "security": ['
+            first = True
+            for r in db.all_security(scan_id):
+                r.pop("scan_id", None)
+                yield ("" if first else ",") + json.dumps(r)
+                first = False
+            yield "]"
             yield "}"
         return Response(json_doc(), mimetype="application/json", headers=headers)
 
