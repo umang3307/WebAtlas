@@ -80,7 +80,14 @@ pip install --no-deps -e .
 - **Analyze documents** (a button on a finished scan) downloads the files found and flags what they leak:
   author names and internal usernames in metadata, software versions, internal and network paths, email
   addresses, hard-coded secrets (API keys, tokens, private keys) and "confidential" markers. Each finding has
-  a severity, and secrets are **masked** — WebAtlas reports that a key leaked without keeping a copy of it.
+  a severity, and secrets are **masked** by default — with a per-finding Reveal/Hide control, so you decide
+  whether to see the raw value.
+- **Passive security scanning** (the *Security* tab) inspects each page's own response as it's crawled —
+  no extra requests, nothing intrusive — for weak or missing security headers (HSTS, CSP, X-Content-Type-Options,
+  clickjacking protection, Referrer-Policy), insecure cookie flags, server/version disclosure, pages served over
+  HTTP, directory listings, forms that submit over HTTP, and mixed content. Findings are deduplicated per host
+  with a count ("no CSP on 240 pages"). It's on by default and sends no requests of its own; active probing is
+  left to a later, opt-in phase.
 - **Ask AI** (the *Ask AI* tab on an analysed scan) builds a searchable index of the documents' text and
   answers questions about them with citations back to the source files. It also labels each document with a
   category and one-line summary. It is **local-first**: with [Ollama](https://ollama.com) (or any
@@ -189,7 +196,9 @@ keep it that way when crawling sites you don't own.
 - [x] **Phase 2:** SQLAlchemy storage written during the crawl, resumable scans that survive a restart, streaming export
 - [x] **Phase 3:** document analysis: metadata leaks, internal paths, emails, hard-coded secrets, confidential markers
 - [x] **Phase 4:** AI layer: local-first LLM client (Ollama by default), document classification, RAG Q&A with citations, offline fallback
-- [ ] **Phase 5:** passive vulnerability checks, extra reconnaissance, Docker Compose, benchmarks, demo
+- [x] **Phase 5:** passive vulnerability scanning — security headers, cookies, disclosure, transport, mixed content (non-intrusive)
+- [ ] **Phase 6:** extra reconnaissance (certificate transparency, Wayback, tech fingerprinting), then Docker Compose, benchmarks, demo
+- [ ] **Later (opt-in):** active "I own this target" testing, behind an off-by-default flag
 
 ## History
 

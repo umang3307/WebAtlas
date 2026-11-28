@@ -166,6 +166,8 @@
               Pages <span class="count" id="countPages">0</span></button>
             <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" tabindex="-1">
               Findings <span class="count" id="countFindings">0</span></button>
+            <button role="tab" id="tab-security" aria-controls="panel-security" aria-selected="false" tabindex="-1">
+              Security <span class="count" id="countSecurity">0</span></button>
             <button role="tab" id="tab-ask" aria-controls="panel-ask" aria-selected="false" tabindex="-1">
               Ask AI</button>
             <button role="tab" id="tab-issues" aria-controls="panel-issues" aria-selected="false" tabindex="-1">
@@ -222,6 +224,21 @@
               </table>
               <p class="table-empty" id="findingEmpty"></p>
               <button class="btn btn-quiet more" id="findingMore" type="button" hidden>Show more</button>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-security" aria-labelledby="tab-security" class="panel" hidden>
+            <div class="findings-head">
+              <div class="sev-summary" id="secSummary" role="group" aria-label="Security findings by severity"></div>
+              <p class="analysis-note" id="securityNote"></p>
+            </div>
+            <div class="table-wrap">
+              <table class="table findings">
+                <thead><tr><th scope="col">Severity</th><th scope="col">Issue</th>
+                  <th scope="col">Where</th><th scope="col">Detail</th></tr></thead>
+                <tbody id="securityRows"></tbody>
+              </table>
+              <p class="table-empty" id="securityEmpty"></p>
             </div>
           </div>
 

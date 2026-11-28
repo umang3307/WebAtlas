@@ -65,6 +65,7 @@
       findings: [], findingLimit: PAGE_SIZE, sevFilter: new Set(), analysis: {},
       ai: {}, asking: false,
       revealSecrets: false, revealedRows: new Set(),
+      security: [], securityCounts: {},
     };
   }
 
@@ -413,6 +414,9 @@
     scan.analysis = data.analysis || {};
     scan.ai = data.ai || {};
     scan.indexable = data.indexable;
+    // Security findings are deduplicated and low-volume, so the snapshot sends the whole set.
+    scan.security = data.security || [];
+    scan.securityCounts = data.security_counts || {};
     for (const d of data.documents) scan.typeCounts.set(d.doc_type, (scan.typeCounts.get(d.doc_type) || 0) + 1);
     scan.events.push(...data.events);
     if (scan.events.length > 1500) scan.events.splice(0, scan.events.length - 1500);
@@ -443,6 +447,7 @@
     if (data.issues.length || first) changed.push("issues");
     if ((data.findings && data.findings.length) || first || analysisChanged) changed.push("findings");
     if (first || aiChanged) changed.push("ask");
+    if ((data.security && data.security.length) || first) changed.push("security");
     if (statusChanged) changed.push("documents", "pages", "issues");   // empty-state wording depends on status
     if (changed.length) scheduleRender(changed);
 
@@ -571,6 +576,7 @@
       if (pendingParts.has("issues")) renderIssues();
       if (pendingParts.has("findings")) renderFindings();
       if (pendingParts.has("ask")) renderAsk();
+      if (pendingParts.has("security")) renderSecurity();
       pendingParts.clear();
     });
   }
@@ -762,6 +768,45 @@
     more.textContent = `Show more (${fmt(rows.length - shown.length)} left)`;
   }
 
+  /* --------------------------------------------------------- passive security */
+
+  function renderSecurity() {
+    const counts = scan.securityCounts || {};
+    const items = scan.security || [];
+    $("countSecurity").textContent = fmt(items.length);
+
+    const present = SEV_ORDER.filter((s) => (counts[s] || 0) > 0);
+    const summary = $("secSummary");
+    summary.replaceChildren(...present.map((s) =>
+      el("span", { class: "sev-chip static" },
+        el("span", { class: `dotsev sev-${s}` }), document.createTextNode(`${SEV_LABEL[s]} ${fmt(counts[s])}`))));
+
+    const running = scan.status === "running";
+    const note = $("securityNote");
+    note.classList.toggle("running", running);
+    if (running) note.textContent = "Checking each page's headers and content as it's crawled…";
+    else if (items.length) note.textContent = "Passive checks only — no extra requests were sent to the site.";
+    else note.textContent = "";
+
+    const ordered = [...items].sort((a, b) =>
+      SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity) || a.rule.localeCompare(b.rule));
+    $("securityRows").replaceChildren(...ordered.map((f) => el("tr", {},
+      el("td", {}, el("span", { class: `sev-badge sev-${f.severity}`, text: SEV_LABEL[f.severity] || f.severity })),
+      el("td", {}, el("div", { class: "cell-title", text: f.title }),
+        f.count > 1 ? el("span", { class: "finding-count", text: `${fmt(f.count)}× pages` }) : null),
+      el("td", {}, f.example_url ? link(f.example_url, f.host || shortPath(f.example_url), "cell-url")
+        : document.createTextNode(f.host || "")),
+      el("td", {}, el("span", { class: "finding-detail", text: f.detail })))));
+
+    const empty = $("securityEmpty");
+    if (!items.length) {
+      empty.textContent = running ? "Passive security checks run as pages are crawled."
+        : "No passive security issues found in the pages crawled.";
+    } else {
+      empty.textContent = "";
+    }
+  }
+
   /* ---------------------------------------------------------------- ask AI */
 
   function renderAsk() {
@@ -896,7 +941,7 @@
 
   /* ---------------------------------------------------------------- tabs */
 
-  const TABS = ["documents", "pages", "findings", "ask", "issues", "activity"];
+  const TABS = ["documents", "pages", "findings", "security", "ask", "issues", "activity"];
   function selectTab(name, focus = false) {
     for (const t of TABS) {
       const tab = $(`tab-${t}`), on = t === name;

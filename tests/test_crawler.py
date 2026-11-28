@@ -26,6 +26,20 @@ def doc_urls(result) -> set[str]:
     return {d.final_url for d in result.documents}
 
 
+async def test_passive_security_findings_in_result():
+    result, _ = await run(FakeSite())
+    rules = {r.rule for r in result.security}
+    assert "insecure-transport" in rules and "missing-csp" in rules
+    # Deduplicated per (rule, host) with a count across pages.
+    assert all(r.count >= 1 for r in result.security)
+    assert any(r.count == result.pages_count for r in result.security)
+
+
+async def test_passive_scan_off_yields_no_security():
+    result, _ = await run(FakeSite(), passive_scan=False)
+    assert result.security == []
+
+
 async def test_finds_documents_by_every_signal():
     site = FakeSite()
     result, _ = await run(site)

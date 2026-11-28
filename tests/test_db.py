@@ -45,6 +45,28 @@ def test_results_are_written_to_the_database_during_the_crawl(tmp_path):
     assert scan["doc_types"]["pdf"] >= 1
 
 
+def test_passive_security_findings_stored_and_deduped(tmp_path):
+    db = Database(tmp_path / "s.db")
+    crawler, result = asyncio.run(crawl_to_db(db, FakeSite()))
+    sec = db.all_security("s1")
+    rules = {r["rule"] for r in sec}
+    # The fake site is plain HTTP with no security headers.
+    assert "insecure-transport" in rules
+    assert "missing-csp" in rules
+    # Deduplicated per (rule, host): one row per rule, counted across pages.
+    insecure = next(r for r in sec if r["rule"] == "insecure-transport")
+    assert insecure["count"] == result.pages_count > 1
+    assert insecure["host"] == "college.test"
+    counts = db.security_severity_counts("s1")
+    assert counts.get("medium", 0) >= 1
+
+
+def test_passive_scan_can_be_disabled(tmp_path):
+    db = Database(tmp_path / "s.db")
+    asyncio.run(crawl_to_db(db, FakeSite(), passive_scan=False))
+    assert db.all_security("s1") == []
+
+
 def test_crawl_result_keeps_counts_not_lists_with_a_db_sink(tmp_path):
     db = Database(tmp_path / "s.db")
     _crawler, result = asyncio.run(crawl_to_db(db, FakeSite()))

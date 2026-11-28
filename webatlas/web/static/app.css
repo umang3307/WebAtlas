@@ -479,3 +479,6 @@ a.cell-url:hover, a.cell-src:hover { color: var(--sea); text-decoration: underli
 @media (max-width: 760px) {
   .findings th:nth-child(3), .findings td:nth-child(3) { display: none; }
 }
+
+.sev-chip.static { cursor: default; }
+.sev-chip.static:hover { background: transparent; }

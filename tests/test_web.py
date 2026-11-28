@@ -57,6 +57,9 @@ def test_full_scan_flow(client):
     assert any(i["kind"] == "robots" for i in data["issues"])
     assert data["events"] and data["events_total"] >= len(data["events"])
     assert any(p["found_on"] for p in data["pages"])
+    # Passive security findings are in the snapshot, deduplicated with counts.
+    assert data["security"] and any(s["rule"] == "missing-csp" for s in data["security"])
+    assert data["security_counts"].get("medium", 0) >= 1
 
 
 def test_cursors_return_only_new_items(client):

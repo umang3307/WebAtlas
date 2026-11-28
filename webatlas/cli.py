@@ -95,6 +95,8 @@ def crawl(
         raise typer.Exit(code=1) from exc
 
     _print_summary(result)
+    if config.passive_scan and result.security:
+        _print_security(result.security)
     analyze = analyze or classify     # classification is built on the analysis pass
     findings, texts = _analyze(result, config, want_text=classify) if analyze and result.documents else ([], {})
     if analyze:
@@ -186,6 +188,26 @@ def _print_classifications(rows: list[dict]) -> None:
     table.add_column("Summary", max_width=48, overflow="fold")
     for r in sorted(rows, key=lambda r: r["category"]):
         table.add_row(f"[cyan]{r['category']}[/cyan]", r["url"], r["summary"])
+    console.print(table)
+
+
+def _print_security(security) -> None:
+    """Print the deduplicated passive security findings (headers, cookies, disclosure, etc.)."""
+    order = ["critical", "high", "medium", "low", "info"]
+    colors = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "cyan", "info": "dim"}
+    sev: dict[str, int] = {}
+    for r in security:
+        sev[r.severity] = sev.get(r.severity, 0) + 1
+    parts = [f"[{colors[s]}]{s}: {sev[s]}[/{colors[s]}]" for s in order if sev.get(s)]
+    console.print(f"\n[bold]{len(security)} passive security findings[/bold] — " + ", ".join(parts))
+    table = Table(show_lines=False, header_style="bold")
+    table.add_column("Severity", width=9)
+    table.add_column("Issue", max_width=38, overflow="fold")
+    table.add_column("Host", overflow="fold")
+    table.add_column("Pages", justify="right", width=6)
+    for r in sorted(security, key=lambda r: order.index(r.severity) if r.severity in order else 9):
+        colour = colors.get(r.severity, "white")
+        table.add_row(f"[{colour}]{r.severity}[/{colour}]", r.title, r.host, str(r.count))
     console.print(table)
 
 
