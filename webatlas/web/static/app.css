@@ -407,3 +407,42 @@ a.cell-url:hover, a.cell-src:hover { color: var(--sea); text-decoration: underli
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- findings (Phase 3) */
+
+.findings-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .75rem; }
+.sev-summary { display: flex; flex-wrap: wrap; gap: .35rem; }
+.sev-chip {
+  display: inline-flex; align-items: center; gap: .35rem; cursor: pointer;
+  border: 1px solid var(--rule); background: #fff; border-radius: 99px; padding: .15rem .6rem;
+  font-size: var(--step--1); font-weight: 600; color: var(--ink-soft);
+}
+.sev-chip[aria-pressed="true"] { border-color: var(--ink); color: var(--ink); background: var(--paper); }
+.sev-chip .dotsev { width: .55rem; height: .55rem; border-radius: 50%; }
+.analysis-note { margin: 0; color: var(--ink-soft); font-size: var(--step--1); }
+.analysis-note.running { color: var(--amber-ink); }
+
+.sev-badge {
+  display: inline-block; min-width: 4.2rem; padding: .1rem .4rem; border-radius: 3px; text-align: center;
+  font-size: .72rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+}
+.sev-critical { background: #7c1d12; color: #fff; }
+.sev-high { background: #f3dcd8; color: #7c2a21; }
+.sev-medium { background: #f4e4c7; color: #6b4600; }
+.sev-low { background: #d9e6f1; color: #1d4a6b; }
+.sev-info { background: #e3e9ee; color: var(--ink-soft); }
+
+.dotsev.sev-critical { background: #7c1d12; }
+.dotsev.sev-high { background: #c0392b; }
+.dotsev.sev-medium { background: var(--amber); }
+.dotsev.sev-low { background: #3f78a0; }
+.dotsev.sev-info { background: #9aa8b4; }
+
+.findings th:nth-child(1) { width: 5.5rem; }
+.findings th:nth-child(4) { width: 30%; }
+.finding-detail { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: var(--step--1);
+  overflow-wrap: anywhere; color: var(--ink); }
+.finding-count { color: var(--ink-soft); font-weight: 600; }
+@media (max-width: 760px) {
+  .findings th:nth-child(3), .findings td:nth-child(3) { display: none; }
+}

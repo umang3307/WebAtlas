@@ -247,3 +247,27 @@ def test_three_scans_write_to_one_database_concurrently(tmp_path):
         assert scan["status"] == "done", f"{j.id}: {scan['status']} {scan['error']}"
         assert scan["documents"] > 5
         assert db.count(DocumentRow, j.id) == scan["documents"]
+
+
+def test_phase2_database_gains_analysis_columns(tmp_path):
+    """A database made before Phase 3 has no analysis columns; opening it must add them."""
+    import sqlite3
+    db_path = tmp_path / "p2.db"
+    # Minimal Phase 2 'scans' table (no analysis_status/findings/severity_counts columns).
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE scans (id TEXT PRIMARY KEY, target TEXT, seeds TEXT, settings TEXT,
+        status TEXT, error TEXT, stopped_early TEXT, started_at TEXT, finished_at TEXT, elapsed REAL,
+        pages INTEGER, documents INTEGER, failures INTEGER, robots_skipped INTEGER, requests INTEGER,
+        doc_checks INTEGER, sitemap_urls INTEGER, sitemap_done INTEGER, doc_types TEXT)""")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO scans (id, target, status, started_at, documents, pages) VALUES "
+                 "('old', 'http://x/', 'done', '2026-11-01T00:00:00+00:00', 3, 2)")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)   # should ALTER TABLE to add the new columns
+    scan = db.get_scan("old")
+    assert scan["analysis_status"] == "none"       # new column, default applied
+    assert scan["findings"] == 0
+    assert scan["severity_counts"] == {}
+    assert scan["documents"] == 3                  # old data preserved

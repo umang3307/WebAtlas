@@ -115,6 +115,8 @@
         <div class="scan-actions">
           <button class="btn btn-danger" id="stopBtn" type="button" hidden>Stop scan</button>
           <button class="btn btn-primary" id="resumeBtn" type="button" hidden>Resume scan</button>
+          <button class="btn btn-primary" id="analyzeBtn" type="button" hidden>Analyze documents</button>
+          <button class="btn btn-danger" id="stopAnalyzeBtn" type="button" hidden>Stop analysis</button>
           <a class="btn btn-secondary" id="exportCsv" download>Export CSV</a>
           <a class="btn btn-secondary" id="exportJson" download>Export JSON</a>
           <button class="btn btn-quiet" id="deleteBtn" type="button">Delete</button>
@@ -160,6 +162,8 @@
               Documents <span class="count" id="countDocs">0</span></button>
             <button role="tab" id="tab-pages" aria-controls="panel-pages" aria-selected="false" tabindex="-1">
               Pages <span class="count" id="countPages">0</span></button>
+            <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" tabindex="-1">
+              Findings <span class="count" id="countFindings">0</span></button>
             <button role="tab" id="tab-issues" aria-controls="panel-issues" aria-selected="false" tabindex="-1">
               Issues <span class="count" id="countIssues">0</span></button>
             <button role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
@@ -196,6 +200,22 @@
               </table>
               <p class="table-empty" id="pageEmpty"></p>
               <button class="btn btn-quiet more" id="pageMore" type="button" hidden>Show more</button>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-findings" aria-labelledby="tab-findings" class="panel" hidden>
+            <div class="findings-head" id="findingsHead">
+              <div class="sev-summary" id="sevSummary" role="group" aria-label="Filter by severity"></div>
+              <p class="analysis-note" id="analysisNote"></p>
+            </div>
+            <div class="table-wrap">
+              <table class="table findings">
+                <thead><tr><th scope="col">Severity</th><th scope="col">Finding</th>
+                  <th scope="col">Document</th><th scope="col">Detail</th></tr></thead>
+                <tbody id="findingRows"></tbody>
+              </table>
+              <p class="table-empty" id="findingEmpty"></p>
+              <button class="btn btn-quiet more" id="findingMore" type="button" hidden>Show more</button>
             </div>
           </div>
 

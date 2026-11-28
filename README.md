@@ -22,7 +22,7 @@ page it was found on. No paid APIs, no API keys.
 | JavaScript sites | Handled by Bright Data | Optional headless-browser fallback (Playwright) |
 | Security | User URL passed to a shell command | SSRF guard on every request and redirect, no shell calls, UI output escaped |
 | Interfaces | Web UI | Scan console with a live site map, history and export, plus a `webatlas` CLI |
-| Tests | None | 107 tests against a fake website (no network needed), plus a live-site workflow |
+| Tests | None | 157 tests against a fake website (no network needed), plus a live-site workflow |
 
 ## How it works
 
@@ -77,8 +77,13 @@ pip install --no-deps -e .
   site section; documents appear around the page that links to them. Click a page to see only its files.
 - **Explore the results:** search, filter by file type, see where each file was found and how it was confirmed,
   and check the Issues tab for pages that failed or were skipped because of robots.txt.
-- **Stop** a scan at any time and keep what it found. **Export** to CSV or JSON. Past scans are saved in
-  `webatlas.db` and listed in the sidebar.
+- **Analyze documents** (a button on a finished scan) downloads the files found and flags what they leak:
+  author names and internal usernames in metadata, software versions, internal and network paths, email
+  addresses, hard-coded secrets (API keys, tokens, private keys) and "confidential" markers. Each finding has
+  a severity, and secrets are **masked** — WebAtlas reports that a key leaked without keeping a copy of it.
+- **Stop** a scan at any time and keep what it found; **Resume** a scan that was interrupted or stopped.
+  **Export** to CSV or JSON (streamed, so even a scan with hundreds of thousands of documents exports without
+  being held in memory). Scans are written to `webatlas.db` as they run and listed in the sidebar.
 
 The console only listens on `127.0.0.1`, rejects requests addressed to other host names (DNS rebinding),
 accepts only JSON for actions (CSRF), sends a strict Content-Security-Policy, and shows text from crawled
@@ -90,9 +95,9 @@ sites strictly as text.
 webatlas crawl https://www.example.edu --depth 2 --max-pages 200 --max-time 300 --out results.json
 ```
 
-Useful options: `--download` (hash documents with SHA-256 and drop duplicates), `--render` (headless browser
-for JavaScript-only pages), `--no-sitemap`, `--no-subdomains`, `--delay 1.0`, `--doc-checks 500`.
-Run `webatlas crawl --help` for all.
+Useful options: `--analyze` (download the documents found and flag what they leak), `--download` (hash
+documents with SHA-256 and drop duplicates), `--render` (headless browser for JavaScript-only pages),
+`--no-sitemap`, `--no-subdomains`, `--delay 1.0`, `--doc-checks 500`. Run `webatlas crawl --help` for all.
 
 ### Limits
 
@@ -142,7 +147,7 @@ keep it that way when crawling sites you don't own.
 - [x] **Phase 1:** own crawler: robots.txt, sitemaps, document detection, SSRF guard, CLI, tests
 - [x] **Scan console:** live site map, scan settings, history, stop, CSV/JSON export
 - [x] **Phase 2:** SQLAlchemy storage written during the crawl, resumable scans that survive a restart, streaming export
-- [ ] **Phase 3:** document analysis: metadata leaks (authors, software, internal paths), emails, secrets
+- [x] **Phase 3:** document analysis: metadata leaks, internal paths, emails, hard-coded secrets, confidential markers
 - [ ] **Phase 4:** AI layer: local-LLM link prioritisation, document classification, RAG Q&A with citations
 - [ ] **Phase 5:** Docker Compose, benchmarks, demo
 

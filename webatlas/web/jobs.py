@@ -19,17 +19,20 @@ from datetime import UTC, datetime
 
 import httpx
 
+from webatlas.analyzer import Analyzer
 from webatlas.config import CrawlConfig
 from webatlas.crawler import Crawler
-from webatlas.db import Database, DbSink, DocumentRow, IssueRow, PageRow
+from webatlas.db import Database, DbSink, DocumentRow, FindingRow, IssueRow, PageRow
 from webatlas.safety import Resolver, default_resolver
 
 log = logging.getLogger("webatlas.web")
 
 MAX_EVENTS = 4000            # activity feed entries kept per scan
 MAX_RUNNING = 3              # scans allowed at the same time
+MAX_ANALYSES = 2            # document analyses allowed at the same time
 KEEP_FINISHED_IN_MEMORY = 5  # older finished scans are served from the database
 DEFAULT_TIME_LIMIT = 600.0   # seconds, when the request doesn't set one
+ANALYSIS_TIME_LIMIT = 1800.0  # 30 min default cap on a document analysis
 
 
 class TooManyScans(Exception):
@@ -127,6 +130,27 @@ class ScanJob:
                 "elapsed": round(self.elapsed, 1)}
 
 
+class AnalysisJob:
+    """A document analysis running (or just finished) in this process. Counters live in the
+    scan row (the analyzer writes them); this holds only status, stop, and a short event feed."""
+
+    def __init__(self, scan_id: str):
+        self.id = scan_id
+        self.status = "running"
+        self.started_mono = time.monotonic()
+        self.events: list[dict] = []
+        self.events_dropped = 0
+        self.analyzer: Analyzer | None = None
+        self.thread: threading.Thread | None = None
+
+    def add_event(self, event: dict) -> None:
+        self.events.append(event)
+        if len(self.events) > MAX_EVENTS:
+            trim = len(self.events) - MAX_EVENTS
+            del self.events[:trim]
+            self.events_dropped += trim
+
+
 class ScanManager:
     def __init__(self, db: Database, allow_private: bool = False,
                  transport: httpx.AsyncBaseTransport | None = None, resolver: Resolver = default_resolver):
@@ -135,6 +159,7 @@ class ScanManager:
         self.transport = transport      # tests inject a fake website here
         self.resolver = resolver
         self.jobs: dict[str, ScanJob] = {}
+        self.analyses: dict[str, AnalysisJob] = {}
         self._lock = threading.Lock()
 
     def _evict_finished(self) -> None:
@@ -240,6 +265,59 @@ class ScanManager:
         job.crawler.request_stop()
         return True
 
+    # ---------------------------------------------------------------- analysis
+
+    def analyze(self, scan_id: str) -> AnalysisJob | None:
+        with self._lock:
+            row = self.db.get_scan(scan_id)
+            if row is None:
+                return None
+            if row["status"] == "running":
+                raise RuntimeError("wait for the crawl to finish before analysing its documents")
+            existing = self.analyses.get(scan_id)
+            if existing and existing.status == "running":
+                return existing
+            running = sum(1 for a in self.analyses.values() if a.status == "running")
+            if running >= MAX_ANALYSES:
+                raise TooManyScans(f"{running} analyses are already running; wait for one to finish")
+            self._evict_finished_analyses()
+            job = AnalysisJob(scan_id)
+            job.analyzer = Analyzer(self.db, scan_id, allow_private=self.allow_private,
+                                    max_duration=ANALYSIS_TIME_LIMIT, transport=self.transport,
+                                    resolver=self.resolver, on_event=job.add_event)
+            self.analyses[scan_id] = job
+        job.thread = threading.Thread(target=self._run_analysis, args=(job,), daemon=True,
+                                      name=f"analyze-{scan_id}")
+        job.thread.start()
+        return job
+
+    def _run_analysis(self, job: AnalysisJob) -> None:
+        try:
+            asyncio.run(job.analyzer.run())
+            job.status = "done"
+        except Exception as exc:
+            job.status = "error"
+            log.exception("analysis of %s failed", job.id)
+            try:
+                self.db.set_status(job.id, analysis_status="error",
+                                   analysis_error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                log.exception("could not record analysis failure for %s", job.id)
+
+    def stop_analysis(self, scan_id: str) -> bool:
+        job = self.analyses.get(scan_id)
+        if not job or job.status != "running":
+            return False
+        job.analyzer.request_stop()
+        return True
+
+    def _evict_finished_analyses(self) -> None:
+        done = [a for a in self.analyses.values() if a.status != "running"]
+        done.sort(key=lambda a: a.started_mono, reverse=True)
+        for old in done[KEEP_FINISHED_IN_MEMORY:]:
+            if old.thread is None or not old.thread.is_alive():
+                self.analyses.pop(old.id, None)
+
     # ---------------------------------------------------------------- reads
 
     def snapshot(self, scan_id: str, cursors: dict[str, int]) -> dict | None:
@@ -274,15 +352,29 @@ class ScanManager:
         docs = self.db.rows_after(DocumentRow, scan_id, cursors.get("documents", 0))
         pages = self.db.rows_after(PageRow, scan_id, cursors.get("pages", 0))
         issues = self.db.rows_after(IssueRow, scan_id, cursors.get("issues", 0))
-        for rows in (docs, pages, issues):
+        findings = self.db.rows_after(FindingRow, scan_id, cursors.get("findings", 0))
+        for rows in (docs, pages, issues, findings):
             for r in rows:
                 r.pop("scan_id", None)
+
+        # Analysis fields always come from the scan row (the analyzer writes them there).
+        arow = self.db.get_scan(scan_id)
+        analysis = {
+            "status": arow["analysis_status"] if arow else "none",
+            "analyzed": arow["analyzed_docs"] if arow else 0,
+            "findings": arow["findings"] if arow else 0,
+            "severity": arow["severity_counts"] if arow else {},
+            "error": arow["analysis_error"] if arow else "",
+            "running": scan_id in self.analyses and self.analyses[scan_id].status == "running",
+        }
         return {
             "id": scan_id, "target": target, "status": status, "error": error,
             "started_at": started_at, "settings": settings, "max_pages": max_pages,
             "resumable": status in ("interrupted", "stopped"),
-            "summary": summary, "events": events, "events_total": events_total,
-            "documents": docs, "pages": pages, "issues": issues,
+            "analyzable": status in ("done", "stopped") and analysis["status"] != "running",
+            "summary": summary, "analysis": analysis,
+            "events": events, "events_total": events_total,
+            "documents": docs, "pages": pages, "issues": issues, "findings": findings,
         }
 
     def list_scans(self, limit: int = 50) -> list[dict]:
@@ -298,5 +390,9 @@ class ScanManager:
         job = self.jobs.get(scan_id)
         if job and job.status == "running":
             raise RuntimeError("stop the scan before deleting it")
+        analysis = self.analyses.get(scan_id)
+        if analysis and analysis.status == "running":
+            raise RuntimeError("stop the analysis before deleting the scan")
         self.jobs.pop(scan_id, None)
+        self.analyses.pop(scan_id, None)
         return self.db.delete_scan(scan_id)

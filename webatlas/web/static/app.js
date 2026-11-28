@@ -58,9 +58,10 @@
     return {
       id, target: "", status: "", summary: {}, maxPages: 0,
       documents: [], pages: [], issues: [], events: [],
-      cursors: { events: 0, documents: 0, pages: 0, issues: 0 },
+      cursors: { events: 0, documents: 0, pages: 0, issues: 0, findings: 0 },
       filter: { q: "", types: new Set(), page: null }, docLimit: PAGE_SIZE, pageLimit: PAGE_SIZE,
       typeCounts: new Map(),   // kept up to date as documents arrive, instead of recounting
+      findings: [], findingLimit: PAGE_SIZE, sevFilter: new Set(), analysis: {},
     };
   }
 
@@ -361,7 +362,9 @@
     stopPolling();
     scan = newScanState(id);
     atlas.reset(null);
-    for (const k of ["docRows", "pageRows", "issueRows", "activity", "typeChips"]) $(k).replaceChildren();
+    for (const k of ["docRows", "pageRows", "issueRows", "findingRows", "activity", "typeChips", "sevSummary"])
+      $(k).replaceChildren();
+    $("sevSummary").dataset.key = "";
     $("docSearch").value = "";
     setPageFilter(null, false);
     $("scanHead").hidden = false;
@@ -384,7 +387,7 @@
     const c = scan.cursors;
     let data;
     try {
-      data = await api(`/api/scans/${scan.id}?events=${c.events}&documents=${c.documents}&pages=${c.pages}&issues=${c.issues}`);
+      data = await api(`/api/scans/${scan.id}?events=${c.events}&documents=${c.documents}&pages=${c.pages}&issues=${c.issues}&findings=${c.findings}`);
     } catch (e) {
       if (token !== pollToken) return;
       if (/No scan/.test(e.message)) { toast("That scan no longer exists."); location.hash = "#/"; return; }
@@ -403,14 +406,17 @@
     scan.pages.push(...data.pages);
     scan.documents.push(...data.documents);
     scan.issues.push(...data.issues);
+    scan.findings.push(...(data.findings || []));
+    scan.analysis = data.analysis || {};
     for (const d of data.documents) scan.typeCounts.set(d.doc_type, (scan.typeCounts.get(d.doc_type) || 0) + 1);
     scan.events.push(...data.events);
     if (scan.events.length > 1500) scan.events.splice(0, scan.events.length - 1500);
-    // Document/page/issue cursors are the id of the last row received (ids are global, not
-    // per-scan), so the next poll asks the server for rows newer than that. Events are a count.
+    // Document/page/issue/finding cursors are the id of the last row received (ids are global,
+    // not per-scan), so the next poll asks for rows newer than that. Events are a count.
     if (data.pages.length) c.pages = data.pages[data.pages.length - 1].id;
     if (data.documents.length) c.documents = data.documents[data.documents.length - 1].id;
     if (data.issues.length) c.issues = data.issues[data.issues.length - 1].id;
+    if (data.findings && data.findings.length) c.findings = data.findings[data.findings.length - 1].id;
     c.events = data.events_total;
 
     atlas.addPages(data.pages);
@@ -420,20 +426,29 @@
     renderHeader(data);
     if (data.events.length) appendActivity(data.events);
     // Only rebuild the tables that actually received new rows.
+    const analysisRunning = scan.analysis.running || scan.analysis.status === "running";
+    const analysisChanged = scan.prevAnalysisStatus !== scan.analysis.status;
+    scan.prevAnalysisStatus = scan.analysis.status;
     const changed = [];
     if (data.documents.length || first) changed.push("documents");
     if (data.pages.length || first) changed.push("pages");
     if (data.issues.length || first) changed.push("issues");
+    if ((data.findings && data.findings.length) || first || analysisChanged) changed.push("findings");
     if (statusChanged) changed.push("documents", "pages", "issues");   // empty-state wording depends on status
     if (changed.length) scheduleRender(changed);
 
-    if (data.status === "running") {
+    if (data.status === "running" || analysisRunning) {
       pollTimer = setTimeout(() => poll(token), POLL_MS);
-    } else if (statusChanged && !first) {
+    }
+    if (statusChanged && !first && data.status !== "running") {
       refreshHistory();
       const found = `${fmt(scan.documents.length)} ${scan.documents.length === 1 ? "document" : "documents"} found`;
       toast(data.status === "error" ? "The scan failed." :
         data.status === "stopped" ? `Scan stopped: ${found}.` : `Scan finished: ${found}.`);
+    }
+    if (analysisChanged && !analysisRunning && scan.analysis.status === "done") {
+      refreshHistory();
+      toast(`Analysis finished: ${fmt(scan.analysis.findings || 0)} findings in ${fmt(scan.analysis.analyzed || 0)} documents.`);
     }
   }
 
@@ -475,10 +490,23 @@
     const stop = $("stopBtn");
     stop.hidden = !running;
     if (!running) { stop.disabled = false; stop.textContent = "Stop scan"; }
-    $("deleteBtn").hidden = running;
+    const analysisRunning = scan.analysis.running || scan.analysis.status === "running";
+    $("deleteBtn").hidden = running || analysisRunning;
     const resume = $("resumeBtn");
-    resume.hidden = !data.resumable;
+    resume.hidden = !data.resumable || analysisRunning;
     if (data.resumable) { resume.disabled = false; resume.textContent = "Resume scan"; }
+
+    const analyze = $("analyzeBtn");
+    analyze.hidden = !data.analyzable || analysisRunning;
+    if (!analyze.hidden) {
+      analyze.disabled = false;
+      analyze.textContent = scan.analysis.status === "done" || scan.analysis.status === "stopped"
+        ? "Re-analyze documents" : "Analyze documents";
+    }
+    const stopAnalyze = $("stopAnalyzeBtn");
+    stopAnalyze.hidden = !analysisRunning;
+    if (analysisRunning) { stopAnalyze.disabled = false; stopAnalyze.textContent = "Stop analysis"; }
+    $("countFindings").textContent = fmt(scan.analysis.findings || scan.findings.length);
 
     const note = $("stoppedNote");
     note.classList.toggle("error", scan.status === "error");
@@ -504,7 +532,7 @@
 
   /* ---------------------------------------------------------------- tables */
 
-  const ALL_PARTS = ["documents", "pages", "issues"];
+  const ALL_PARTS = ["documents", "pages", "issues", "findings"];
   const pendingParts = new Set();
   function scheduleRender(parts = ALL_PARTS) {
     for (const p of parts) pendingParts.add(p);
@@ -516,6 +544,7 @@
       if (pendingParts.has("documents")) { renderChips(); renderDocuments(); }
       if (pendingParts.has("pages")) renderPages();
       if (pendingParts.has("issues")) renderIssues();
+      if (pendingParts.has("findings")) renderFindings();
       pendingParts.clear();
     });
   }
@@ -619,6 +648,68 @@
     $("issueEmpty").textContent = scan.issues.length ? "" : "No problems so far.";
   }
 
+  const SEV_ORDER = ["critical", "high", "medium", "low", "info"];
+  const SEV_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
+
+  function renderFindings() {
+    const a = scan.analysis || {};
+    const sev = a.severity || {};
+    // Severity summary chips (also act as filters).
+    const present = SEV_ORDER.filter((s) => (sev[s] || 0) > 0);
+    const summary = $("sevSummary");
+    const key = present.map((s) => `${s}:${sev[s]}`).join(",") + "|" + [...scan.sevFilter].join(",");
+    if (summary.dataset.key !== key) {
+      summary.dataset.key = key;
+      summary.replaceChildren(...present.map((s) => {
+        const b = el("button", { type: "button", class: "sev-chip", "aria-pressed": String(scan.sevFilter.has(s)) },
+          el("span", { class: `dotsev sev-${s}` }), document.createTextNode(`${SEV_LABEL[s]} ${fmt(sev[s])}`));
+        b.addEventListener("click", () => {
+          if (scan.sevFilter.has(s)) scan.sevFilter.delete(s); else scan.sevFilter.add(s);
+          scan.findingLimit = PAGE_SIZE;
+          scheduleRender(["findings"]);
+        });
+        return b;
+      }));
+    }
+
+    // Analysis status note.
+    const note = $("analysisNote");
+    const running = a.running || a.status === "running";
+    note.classList.toggle("running", running);
+    if (running) note.textContent = `Analysing documents… ${fmt(a.analyzed || 0)} done, ${fmt(a.findings || 0)} findings so far.`;
+    else if (a.status === "done") note.textContent = `Analysed ${fmt(a.analyzed || 0)} documents.`;
+    else if (a.status === "stopped") note.textContent = `Analysis stopped after ${fmt(a.analyzed || 0)} documents.`;
+    else if (a.status === "error") note.textContent = `Analysis failed: ${a.error || "unknown error"}.`;
+    else note.textContent = "";
+
+    const rows = scan.sevFilter.size
+      ? scan.findings.filter((f) => scan.sevFilter.has(f.severity))
+      : scan.findings;
+    const shown = rows.slice(0, scan.findingLimit);
+    $("findingRows").replaceChildren(...shown.map((f) => el("tr", {},
+      el("td", {}, el("span", { class: `sev-badge sev-${f.severity}`, text: SEV_LABEL[f.severity] || f.severity })),
+      el("td", {}, el("div", { class: "cell-title", text: f.title }),
+        f.count > 1 ? el("span", { class: "finding-count", text: `${f.count}×` }) : null),
+      el("td", {}, link(f.url, shortPath(f.url), "cell-url")),
+      el("td", {}, el("span", { class: "finding-detail", text: f.detail })))));
+
+    const empty = $("findingEmpty");
+    if (!scan.findings.length) {
+      empty.textContent = running ? "Analysing… findings appear here as documents are checked."
+        : a.status === "done" || a.status === "stopped"
+          ? "No leaks found in the documents analysed. That's a good result."
+          : "Click “Analyze documents” to download the files found and check them for leaked "
+            + "metadata, internal paths, emails and secrets.";
+    } else if (!rows.length) {
+      empty.textContent = "No findings match this severity filter.";
+    } else {
+      empty.textContent = "";
+    }
+    const more = $("findingMore");
+    more.hidden = rows.length <= shown.length;
+    more.textContent = `Show more (${fmt(rows.length - shown.length)} left)`;
+  }
+
   function eventText(e) {
     switch (e.type) {
       case "page": return `Read ${shortPath(e.url)} (${e.links} links, ${e.documents} files)`;
@@ -627,6 +718,9 @@
       case "skipped": return `Skipped ${shortPath(e.url)} because robots.txt disallows it`;
       case "info": return e.message.charAt(0).toUpperCase() + e.message.slice(1);
       case "done": return `Finished: ${e.pages} pages, ${e.documents} documents`;
+      case "analysis_finding": return `${shortPath(e.url)}: ${e.count} finding${e.count === 1 ? "" : "s"} (${e.top})`;
+      case "analysis_skip": return `Couldn't analyse ${shortPath(e.url)}: ${e.reason}`;
+      case "analysis_done": return `Analysis ${e.status}: ${e.findings} findings in ${e.analyzed} documents`;
       default: return e.type;
     }
   }
@@ -660,7 +754,7 @@
 
   /* ---------------------------------------------------------------- tabs */
 
-  const TABS = ["documents", "pages", "issues", "activity"];
+  const TABS = ["documents", "pages", "findings", "issues", "activity"];
   function selectTab(name, focus = false) {
     for (const t of TABS) {
       const tab = $(`tab-${t}`), on = t === name;
@@ -761,6 +855,30 @@
     }
   }
 
+  async function onAnalyze() {
+    const b = $("analyzeBtn");
+    b.disabled = true;
+    b.textContent = "Starting…";
+    const id = scan.id;
+    try {
+      await api(`/api/scans/${id}/analyze`, { method: "POST", body: {} });
+      selectTab("findings");
+      openScan(id);            // re-open so polling follows the analysis
+    } catch (e) {
+      toast(e.message);
+      b.disabled = false;
+      b.textContent = "Analyze documents";
+    }
+  }
+
+  async function onStopAnalysis() {
+    const b = $("stopAnalyzeBtn");
+    b.disabled = true;
+    b.textContent = "Stopping…";
+    try { await api(`/api/scans/${scan.id}/analyze/stop`, { method: "POST", body: {} }); }
+    catch (e) { toast(e.message); b.disabled = false; b.textContent = "Stop analysis"; }
+  }
+
   /* ---------------------------------------------------------------- wiring */
 
   function bind() {
@@ -777,6 +895,8 @@
     $("newScanBtn").addEventListener("click", () => { location.hash = "#/"; $("urlInput").focus(); });
     $("stopBtn").addEventListener("click", onStop);
     $("resumeBtn").addEventListener("click", onResume);
+    $("analyzeBtn").addEventListener("click", onAnalyze);
+    $("stopAnalyzeBtn").addEventListener("click", onStopAnalysis);
     $("deleteBtn").addEventListener("click", onDelete);
     $("zoomIn").addEventListener("click", () => atlas.zoom(1.3));
     $("zoomOut").addEventListener("click", () => atlas.zoom(1 / 1.3));
@@ -794,6 +914,7 @@
     });
     $("docMore").addEventListener("click", () => { scan.docLimit += PAGE_SIZE; scheduleRender(["documents"]); });
     $("pageMore").addEventListener("click", () => { scan.pageLimit += PAGE_SIZE; scheduleRender(["pages"]); });
+    $("findingMore").addEventListener("click", () => { scan.findingLimit += PAGE_SIZE; scheduleRender(["findings"]); });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("sectionsPanel").hidden) $("sectionsPanel").hidden = true;
     });
