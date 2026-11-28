@@ -406,9 +406,11 @@
     for (const d of data.documents) scan.typeCounts.set(d.doc_type, (scan.typeCounts.get(d.doc_type) || 0) + 1);
     scan.events.push(...data.events);
     if (scan.events.length > 1500) scan.events.splice(0, scan.events.length - 1500);
-    c.pages += data.pages.length;
-    c.documents += data.documents.length;
-    c.issues += data.issues.length;
+    // Document/page/issue cursors are the id of the last row received (ids are global, not
+    // per-scan), so the next poll asks the server for rows newer than that. Events are a count.
+    if (data.pages.length) c.pages = data.pages[data.pages.length - 1].id;
+    if (data.documents.length) c.documents = data.documents[data.documents.length - 1].id;
+    if (data.issues.length) c.issues = data.issues[data.issues.length - 1].id;
     c.events = data.events_total;
 
     atlas.addPages(data.pages);
@@ -474,14 +476,18 @@
     stop.hidden = !running;
     if (!running) { stop.disabled = false; stop.textContent = "Stop scan"; }
     $("deleteBtn").hidden = running;
+    const resume = $("resumeBtn");
+    resume.hidden = !data.resumable;
+    if (data.resumable) { resume.disabled = false; resume.textContent = "Resume scan"; }
 
     const note = $("stoppedNote");
-    note.classList.toggle("error", scan.status === "error" || scan.status === "interrupted");
+    note.classList.toggle("error", scan.status === "error");
     if (scan.status === "error") {
       note.textContent = `The scan failed: ${data.error || "unknown error"}.`;
       note.hidden = false;
     } else if (scan.status === "interrupted") {
-      note.textContent = "The server stopped while this scan was running, so its results weren't saved. Start it again.";
+      note.textContent = "The server stopped while this scan was running. Everything it had found is saved below — " +
+        "click Resume scan to continue from where it left off.";
       note.hidden = false;
     } else if (s.stopped_early && !running) {
       const why = s.stopped_early === "stopped by user" ? "You stopped this scan" :
@@ -739,6 +745,22 @@
     catch (e) { toast(e.message); b.disabled = false; b.textContent = "Stop scan"; }
   }
 
+  async function onResume() {
+    const b = $("resumeBtn");
+    b.disabled = true;
+    b.textContent = "Resuming…";
+    const id = scan.id;
+    try {
+      await api(`/api/scans/${id}/resume`, { method: "POST", body: {} });
+      openScan(id);            // re-open so polling restarts from the live job
+      refreshHistory();
+    } catch (e) {
+      toast(e.message);
+      b.disabled = false;
+      b.textContent = "Resume scan";
+    }
+  }
+
   /* ---------------------------------------------------------------- wiring */
 
   function bind() {
@@ -754,6 +776,7 @@
     $("sectionsNone").addEventListener("click", () => $("sectionsList").querySelectorAll("input").forEach((i) => { i.checked = false; }));
     $("newScanBtn").addEventListener("click", () => { location.hash = "#/"; $("urlInput").focus(); });
     $("stopBtn").addEventListener("click", onStop);
+    $("resumeBtn").addEventListener("click", onResume);
     $("deleteBtn").addEventListener("click", onDelete);
     $("zoomIn").addEventListener("click", () => atlas.zoom(1.3));
     $("zoomOut").addEventListener("click", () => atlas.zoom(1 / 1.3));
