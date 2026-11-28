@@ -10,6 +10,8 @@ API (JSON):
   GET    /api/scans/<id>?events=&documents=&pages=&issues=   progress since those cursors
   POST   /api/scans/<id>/stop            finish early, keep results
   POST   /api/scans/<id>/resume          continue an interrupted or stopped scan
+  POST   /api/scans/<id>/analyze         download the scan's documents and flag what they leak
+  POST   /api/scans/<id>/analyze/stop    stop a running analysis, keep findings so far
   DELETE /api/scans/<id>                 remove from history
   GET    /api/scans/<id>/export?format=json|csv   (streamed from the database)
 """
@@ -31,7 +33,7 @@ from werkzeug.exceptions import HTTPException
 from webatlas import __version__
 from webatlas.config import CrawlConfig
 from webatlas.crawler import discover_sections
-from webatlas.db import Database, DocumentRow
+from webatlas.db import Database, DocumentRow, FindingRow
 from webatlas.fetcher import Fetcher, FetchError
 from webatlas.safety import Resolver, UnsafeTargetError, default_resolver
 from webatlas.urls import normalize_url
@@ -171,7 +173,8 @@ def create_app(
 
     @app.get("/api/scans/<scan_id>")
     def scan(scan_id):
-        cursors = {k: max(0, request.args.get(k, 0, type=int)) for k in ("events", "documents", "pages", "issues")}
+        cursors = {k: max(0, request.args.get(k, 0, type=int))
+                   for k in ("events", "documents", "pages", "issues", "findings")}
         snap = manager.snapshot(scan_id, cursors)
         if snap is None:
             abort(404, description="No scan with that id")
@@ -192,6 +195,24 @@ def create_app(
         if job is None:
             return jsonify({"error": "Only an interrupted or stopped scan can be resumed"}), 409
         return jsonify({"id": job.id})
+
+    @app.post("/api/scans/<scan_id>/analyze")
+    def analyze_scan(scan_id):
+        try:
+            job = manager.analyze(scan_id)
+        except TooManyScans as exc:
+            return jsonify({"error": str(exc)}), 429
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        if job is None:
+            abort(404, description="No scan with that id")
+        return jsonify({"id": job.id})
+
+    @app.post("/api/scans/<scan_id>/analyze/stop")
+    def stop_analysis(scan_id):
+        if not manager.stop_analysis(scan_id):
+            return jsonify({"error": "No analysis is running for that scan"}), 409
+        return jsonify({"ok": True})
 
     @app.delete("/api/scans/<scan_id>")
     def delete_scan(scan_id):
@@ -241,7 +262,8 @@ def create_app(
                                 "doc_types": row["doc_types"], "stopped_early": row["stopped_early"]}}
             yield json.dumps(head)[:-1]   # open the object, drop the closing brace
             from webatlas.db import IssueRow, PageRow
-            for name, model in (("documents", DocumentRow), ("pages", PageRow), ("issues", IssueRow)):
+            for name, model in (("documents", DocumentRow), ("pages", PageRow), ("issues", IssueRow),
+                                ("findings", FindingRow)):
                 yield f', "{name}": ['
                 first = True
                 for r in db.iter_rows(model, scan_id):

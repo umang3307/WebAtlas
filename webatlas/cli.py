@@ -50,6 +50,7 @@ def crawl(
     doc_checks: int = typer.Option(1000, "--doc-checks", help="Documents to confirm with a request (0 = no limit)."),
     unlimited: bool = typer.Option(False, "--unlimited", help="Lift depth, page, time and confirmation limits."),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write full results to this JSON file."),
+    analyze: bool = typer.Option(False, "--analyze", help="Download the documents found and flag what they leak."),
     allow_private: bool = typer.Option(False, "--allow-private", help="Allow localhost/private IPs (testing)."),
 ) -> None:
     """Crawl a site and list every document it links to."""
@@ -92,9 +93,76 @@ def crawl(
         raise typer.Exit(code=1) from exc
 
     _print_summary(result)
+    findings = _analyze(result, config) if analyze and result.documents else []
+    if analyze:
+        _print_findings(findings)
     if out:
-        out.write_text(json.dumps(result.to_dict(), indent=2))
+        payload = result.to_dict()
+        if analyze:
+            payload["findings"] = [f.__dict__ for f in findings]
+        out.write_text(json.dumps(payload, indent=2))
         console.print(f"\nFull results written to [bold]{out}[/bold]")
+
+
+def _analyze(result, config):
+    """Download each document found and scan it for leaks. Returns a flat list of findings
+    (each tagged with its document url)."""
+    import asyncio
+
+    from webatlas.analysis.extract import MAX_PARSE_BYTES, extract_document
+    from webatlas.analysis.findings import scan_document
+    from webatlas.analyzer import ANALYZABLE
+    from webatlas.fetcher import Fetcher, FetchError
+    from webatlas.safety import UnsafeTargetError
+
+    targets = [d for d in result.documents if d.doc_type in ANALYZABLE]
+    found: list = []
+
+    async def go():
+        async with Fetcher(config) as fetcher:
+            with Progress(TextColumn("[bold cyan]Analysing"), BarColumn(), MofNCompleteColumn(),
+                          TimeElapsedColumn(), console=console, transient=True) as prog:
+                task = prog.add_task("", total=len(targets))
+                for doc in targets:
+                    prog.advance(task)
+                    try:
+                        resp = await fetcher.get(doc.final_url, max_bytes=MAX_PARSE_BYTES)
+                    except (FetchError, UnsafeTargetError):
+                        continue
+                    if not resp.ok or not resp.body:
+                        continue
+                    extracted = await asyncio.to_thread(extract_document, resp.body, doc.doc_type)
+                    for f in await asyncio.to_thread(scan_document, extracted):
+                        f.url = doc.final_url
+                        found.append(f)
+
+    asyncio.run(go())
+    return found
+
+
+def _print_findings(findings) -> None:
+    from collections import Counter
+
+    if not findings:
+        console.print("\n[bold green]No leaks found[/bold green] in the documents analysed.")
+        return
+    sev = Counter(f.severity for f in findings)
+    order = ["critical", "high", "medium", "low", "info"]
+    colors = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "cyan", "info": "dim"}
+    parts = [f"[{colors[s]}]{s}: {sev[s]}[/{colors[s]}]" for s in order if sev.get(s)]
+    console.print(f"\n[bold]{len(findings)} findings[/bold] — " + ", ".join(parts))
+    table = Table(show_lines=False, header_style="bold")
+    table.add_column("Severity", width=9)
+    table.add_column("Finding", max_width=36, overflow="fold")
+    table.add_column("Document", overflow="fold")
+    table.add_column("Detail", max_width=34, overflow="fold")
+    shown = sorted(findings, key=lambda f: order.index(f.severity) if f.severity in order else 9)[:40]
+    for f in shown:
+        colour = colors.get(f.severity, "white")
+        table.add_row(f"[{colour}]{f.severity}[/{colour}]", f.title, getattr(f, "url", ""), f.detail)
+    console.print(table)
+    if len(findings) > 40:
+        console.print(f"[dim]... and {len(findings) - 40} more (use --out to save them all)[/dim]")
 
 
 @app.command()
