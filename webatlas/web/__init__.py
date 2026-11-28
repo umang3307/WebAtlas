@@ -9,8 +9,9 @@ API (JSON):
   GET    /api/scans                      scan history
   GET    /api/scans/<id>?events=&documents=&pages=&issues=   progress since those cursors
   POST   /api/scans/<id>/stop            finish early, keep results
+  POST   /api/scans/<id>/resume          continue an interrupted or stopped scan
   DELETE /api/scans/<id>                 remove from history
-  GET    /api/scans/<id>/export?format=json|csv
+  GET    /api/scans/<id>/export?format=json|csv   (streamed from the database)
 """
 
 from __future__ import annotations
@@ -30,9 +31,9 @@ from werkzeug.exceptions import HTTPException
 from webatlas import __version__
 from webatlas.config import CrawlConfig
 from webatlas.crawler import discover_sections
+from webatlas.db import Database, DocumentRow
 from webatlas.fetcher import Fetcher, FetchError
 from webatlas.safety import Resolver, UnsafeTargetError, default_resolver
-from webatlas.storage import ScanStore
 from webatlas.urls import normalize_url
 from webatlas.web.jobs import ScanManager, TooManyScans, clean_settings
 
@@ -51,8 +52,8 @@ def create_app(
 ) -> Flask:
     if allow_private is None:
         allow_private = os.environ.get("WEBATLAS_ALLOW_PRIVATE") == "1"
-    store = ScanStore(db_path or os.environ.get("WEBATLAS_DB", "webatlas.db"))
-    manager = ScanManager(store, allow_private=allow_private, transport=transport, resolver=resolver)
+    db = Database(db_path or os.environ.get("WEBATLAS_DB", "webatlas.db"))
+    manager = ScanManager(db, allow_private=allow_private, transport=transport, resolver=resolver)
     allowed_hosts = LOCAL_HOSTS | (extra_hosts or set())
 
     app = Flask(__name__, static_folder=None)
@@ -166,7 +167,7 @@ def create_app(
 
     @app.get("/api/scans")
     def list_scans():
-        return jsonify({"scans": store.list()})
+        return jsonify({"scans": manager.list_scans()})
 
     @app.get("/api/scans/<scan_id>")
     def scan(scan_id):
@@ -182,35 +183,73 @@ def create_app(
             return jsonify({"error": "That scan isn't running"}), 409
         return jsonify({"ok": True})
 
+    @app.post("/api/scans/<scan_id>/resume")
+    def resume_scan(scan_id):
+        try:
+            job = manager.resume(scan_id)
+        except TooManyScans as exc:
+            return jsonify({"error": str(exc)}), 429
+        if job is None:
+            return jsonify({"error": "Only an interrupted or stopped scan can be resumed"}), 409
+        return jsonify({"id": job.id})
+
     @app.delete("/api/scans/<scan_id>")
     def delete_scan(scan_id):
-        job = manager.jobs.get(scan_id)
-        if job and job.status == "running":
-            return jsonify({"error": "Stop the scan before deleting it"}), 409
-        manager.jobs.pop(scan_id, None)
-        if not store.delete(scan_id):
+        try:
+            deleted = manager.delete(scan_id)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        if not deleted:
             abort(404, description="No scan with that id")
         return jsonify({"ok": True})
 
+    def _csv_safe(value):
+        # Neutralise spreadsheet formulas (CSV injection) in text that came from websites.
+        return "'" + value if isinstance(value, str) and value[:1] in "=+-@\t\r" else value
+
     @app.get("/api/scans/<scan_id>/export")
     def export(scan_id):
-        snap = manager.snapshot(scan_id, {})
-        if snap is None:
+        row = db.get_scan(scan_id)
+        if row is None:
             abort(404, description="No scan with that id")
-        host = (snap["target"].split("/")[2] if "://" in snap["target"] else "scan").replace(":", "_")
-        if request.args.get("format") == "csv":
-            buf = io.StringIO()
-            writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
-            writer.writeheader()
-            for doc in snap["documents"]:
-                # Neutralise spreadsheet formulas (CSV injection) in text that came from websites.
-                writer.writerow({k: ("'" + v if isinstance(v, str) and v[:1] in "=+-@\t\r" else v)
-                                 for k, v in doc.items()})
-            return Response(buf.getvalue(), mimetype="text/csv", headers={
-                "Content-Disposition": f'attachment; filename="webatlas-{host}-{scan_id}.csv"'})
-        payload = {k: snap[k] for k in ("id", "target", "status", "started_at", "settings", "summary",
-                                         "documents", "pages", "issues")}
-        return Response(json.dumps(payload, indent=2), mimetype="application/json", headers={
-            "Content-Disposition": f'attachment; filename="webatlas-{host}-{scan_id}.json"'})
+        host = (row["target"].split("/")[2] if "://" in row["target"] else "scan").replace(":", "_")
+        fmt = "csv" if request.args.get("format") == "csv" else "json"
+        filename = f"webatlas-{host}-{scan_id}.{fmt}"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+        if fmt == "csv":
+            def rows():
+                buf = io.StringIO()
+                writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
+                writer.writeheader()
+                yield buf.getvalue()
+                for doc in db.iter_rows(DocumentRow, scan_id):
+                    buf.seek(0)
+                    buf.truncate()
+                    writer.writerow({k: _csv_safe(v) for k, v in doc.items()})
+                    yield buf.getvalue()
+            return Response(rows(), mimetype="text/csv", headers=headers)
+
+        def json_doc():
+            # Streamed by hand so a huge scan never has to fit in memory at once.
+            head = {"id": row["id"], "target": row["target"], "status": row["status"],
+                    "started_at": row["started_at"], "finished_at": row["finished_at"],
+                    "settings": row["settings"],
+                    "summary": {"pages": row["pages"], "documents": row["documents"],
+                                "failures": row["failures"], "robots_skipped": row["robots_skipped"],
+                                "requests": row["requests"], "elapsed": row["elapsed"],
+                                "doc_types": row["doc_types"], "stopped_early": row["stopped_early"]}}
+            yield json.dumps(head)[:-1]   # open the object, drop the closing brace
+            from webatlas.db import IssueRow, PageRow
+            for name, model in (("documents", DocumentRow), ("pages", PageRow), ("issues", IssueRow)):
+                yield f', "{name}": ['
+                first = True
+                for r in db.iter_rows(model, scan_id):
+                    r.pop("scan_id", None)
+                    yield ("" if first else ",") + json.dumps(r)
+                    first = False
+                yield "]"
+            yield "}"
+        return Response(json_doc(), mimetype="application/json", headers=headers)
 
     return app
