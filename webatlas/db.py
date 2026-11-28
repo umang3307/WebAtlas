@@ -25,6 +25,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -79,6 +80,12 @@ class Scan(Base):
     analyzed_docs: Mapped[int] = mapped_column(Integer, default=0)
     findings: Mapped[int] = mapped_column(Integer, default=0)
     severity_counts: Mapped[str] = mapped_column(Text, default="{}")   # JSON {severity: count}
+    # AI index (Phase 4): classification + embeddings for question answering.
+    ai_status: Mapped[str] = mapped_column(String(16), default="none")   # none|running|done|stopped|error
+    ai_error: Mapped[str] = mapped_column(Text, default="")
+    indexed_docs: Mapped[int] = mapped_column(Integer, default=0)
+    chunks: Mapped[int] = mapped_column(Integer, default=0)
+    embed_kind: Mapped[str] = mapped_column(String(16), default="")      # "model" or "offline"
 
 
 class PageRow(Base):
@@ -110,6 +117,8 @@ class DocumentRow(Base):
     last_modified: Mapped[str] = mapped_column(Text, default="")
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detected_by: Mapped[str] = mapped_column(String(32), default="")
+    category: Mapped[str] = mapped_column(String(32), default="")   # AI classification (Phase 4)
+    summary: Mapped[str] = mapped_column(Text, default="")
     __table_args__ = (Index("ix_documents_scan", "scan_id", "id"),)
 
 
@@ -121,6 +130,35 @@ class IssueRow(Base):
     reason: Mapped[str] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(16))                 # failure | robots | trap
     __table_args__ = (Index("ix_issues_scan", "scan_id", "id"),)
+
+
+class DocContentRow(Base):
+    """Capped extracted text per document, stored during analysis so the AI layer can reuse it
+    without downloading again."""
+    __tablename__ = "doc_content"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
+    document_id: Mapped[int] = mapped_column(Integer)
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, default="")
+    doc_type: Mapped[str] = mapped_column(String(32), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    __table_args__ = (UniqueConstraint("scan_id", "document_id", name="uq_content_doc"),
+                      Index("ix_content_scan", "scan_id", "id"))
+
+
+class ChunkRow(Base):
+    """A chunk of a document's text and its embedding, for retrieval."""
+    __tablename__ = "chunks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
+    document_id: Mapped[int] = mapped_column(Integer)
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, default="")
+    ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+    __table_args__ = (Index("ix_chunks_scan", "scan_id", "id"),)
 
 
 class FindingRow(Base):
@@ -326,6 +364,50 @@ class Database:
     def clear_findings(self, scan_id: str) -> None:
         with self.engine.begin() as conn:
             conn.execute(delete(FindingRow).where(FindingRow.scan_id == scan_id))
+
+    # ---------------------------------------------------------------- AI layer
+
+    def store_content(self, rows: list[dict]) -> None:
+        if rows:
+            with self.engine.begin() as conn:
+                conn.execute(insert(DocContentRow).prefix_with("OR REPLACE"), rows)
+
+    def iter_content(self, scan_id: str):
+        """(document_id, url, title, doc_type, text) for every document with stored text."""
+        with self.engine.connect() as conn:
+            yield from conn.execute(
+                select(DocContentRow.document_id, DocContentRow.url, DocContentRow.title,
+                       DocContentRow.doc_type, DocContentRow.text)
+                .where(DocContentRow.scan_id == scan_id).order_by(DocContentRow.id))
+
+    def has_content(self, scan_id: str) -> bool:
+        with self.engine.connect() as conn:
+            return conn.execute(select(DocContentRow.id).where(DocContentRow.scan_id == scan_id)
+                                .limit(1)).first() is not None
+
+    def set_classification(self, document_id: int, category: str, summary: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(update(DocumentRow).where(DocumentRow.id == document_id)
+                         .values(category=category, summary=summary))
+
+    def add_chunks(self, rows: list[dict]) -> None:
+        if rows:
+            with self.engine.begin() as conn:
+                conn.execute(insert(ChunkRow), rows)
+
+    def all_chunks(self, scan_id: str, limit: int = 50000):
+        """Every chunk of a scan with its embedding, for retrieval."""
+        with self.engine.connect() as conn:
+            yield from conn.execute(
+                select(ChunkRow.id, ChunkRow.document_id, ChunkRow.url, ChunkRow.title,
+                       ChunkRow.ordinal, ChunkRow.text, ChunkRow.embedding)
+                .where(ChunkRow.scan_id == scan_id).limit(limit))
+
+    def clear_ai(self, scan_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(ChunkRow).where(ChunkRow.scan_id == scan_id))
+            conn.execute(update(DocumentRow).where(DocumentRow.scan_id == scan_id)
+                         .values(category="", summary=""))
 
     def count(self, model, scan_id: str) -> int:
         with self.engine.connect() as conn:

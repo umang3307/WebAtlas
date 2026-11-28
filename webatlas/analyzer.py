@@ -27,6 +27,7 @@ ANALYZABLE = frozenset({"pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epu
 
 FLUSH_EVERY = 25          # write findings and counters to the DB every N documents
 PROGRESS_SLICE = 0.5      # seconds between forced counter flushes
+MAX_STORE_CHARS = 60000   # how much extracted text to keep per document for the AI layer
 
 
 class Analyzer:
@@ -46,6 +47,7 @@ class Analyzer:
         self.analyzed = 0
         self.findings_count = 0
         self.severity: dict[str, int] = {}
+        self._content: list[dict] = []    # extracted text kept for the AI layer
         self._deadline = time.monotonic() + max_duration if max_duration else None
 
     def request_stop(self) -> None:
@@ -57,6 +59,7 @@ class Analyzer:
     async def run(self) -> None:
         # A fresh analysis replaces any earlier one for this scan.
         self.db.clear_findings(self.scan_id)
+        self.db.clear_ai(self.scan_id)   # stored text/embeddings are stale once we re-analyse
         self.db.set_status(self.scan_id, analysis_status="running", analysis_error="",
                            analyzed_docs=0, findings=0, severity_counts="{}")
         targets = [(i, url, dt) for i, url, dt in self.db.documents_for_analysis(self.scan_id)
@@ -103,6 +106,11 @@ class Analyzer:
         # Parsing is CPU-bound and runs on untrusted bytes: do it off the event loop.
         extracted = await asyncio.to_thread(extract_document, response.body, doc_type)
         findings = await asyncio.to_thread(scan_document, extracted)
+        if extracted.text.strip():
+            title = extracted.metadata.get("title", "")
+            self._content.append({"scan_id": self.scan_id, "document_id": doc_id, "url": url,
+                                  "title": title, "doc_type": doc_type,
+                                  "text": extracted.text[:MAX_STORE_CHARS]})
         rows = []
         for f in findings:
             rows.append({"scan_id": self.scan_id, "document_id": doc_id, "url": url, "doc_type": doc_type,
@@ -117,6 +125,9 @@ class Analyzer:
 
     def _flush(self, rows: list[dict]) -> None:
         self.db.add_findings(rows)
+        if self._content:
+            self.db.store_content(self._content)
+            self._content = []
         self.db.set_status(self.scan_id, analyzed_docs=self.analyzed, findings=self.findings_count,
                            severity_counts=_json(self.severity))
 
