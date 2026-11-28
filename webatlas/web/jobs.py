@@ -19,6 +19,9 @@ from datetime import UTC, datetime
 
 import httpx
 
+from webatlas.ai import rag
+from webatlas.ai.client import LLMClient
+from webatlas.ai.indexer import AiIndexer
 from webatlas.analyzer import Analyzer
 from webatlas.config import CrawlConfig
 from webatlas.crawler import Crawler
@@ -30,9 +33,12 @@ log = logging.getLogger("webatlas.web")
 MAX_EVENTS = 4000            # activity feed entries kept per scan
 MAX_RUNNING = 3              # scans allowed at the same time
 MAX_ANALYSES = 2            # document analyses allowed at the same time
+MAX_INDEXES = 2             # AI indexing jobs allowed at the same time
 KEEP_FINISHED_IN_MEMORY = 5  # older finished scans are served from the database
 DEFAULT_TIME_LIMIT = 600.0   # seconds, when the request doesn't set one
 ANALYSIS_TIME_LIMIT = 1800.0  # 30 min default cap on a document analysis
+INDEX_TIME_LIMIT = 1800.0    # 30 min default cap on AI indexing
+MAX_QUESTION_CHARS = 2000    # cap on a question sent to the AI layer
 
 
 class TooManyScans(Exception):
@@ -151,16 +157,52 @@ class AnalysisJob:
             self.events_dropped += trim
 
 
+class AiIndexJob:
+    """An AI indexing run (classification + embeddings). Counters live in the scan row;
+    this holds status, stop and a short event feed."""
+
+    def __init__(self, scan_id: str):
+        self.id = scan_id
+        self.status = "running"
+        self.started_mono = time.monotonic()
+        self.events: list[dict] = []
+        self.events_dropped = 0
+        self.indexer: AiIndexer | None = None
+        self.thread: threading.Thread | None = None
+
+    def add_event(self, event: dict) -> None:
+        self.events.append(event)
+        if len(self.events) > MAX_EVENTS:
+            trim = len(self.events) - MAX_EVENTS
+            del self.events[:trim]
+            self.events_dropped += trim
+
+
 class ScanManager:
     def __init__(self, db: Database, allow_private: bool = False,
-                 transport: httpx.AsyncBaseTransport | None = None, resolver: Resolver = default_resolver):
+                 transport: httpx.AsyncBaseTransport | None = None, resolver: Resolver = default_resolver,
+                 llm_client: LLMClient | None = None):
         self.db = db
         self.allow_private = allow_private
         self.transport = transport      # tests inject a fake website here
         self.resolver = resolver
+        self.llm_client = llm_client    # tests inject a fake model here; else built from env
+        self._llm_lock = threading.Lock()
         self.jobs: dict[str, ScanJob] = {}
         self.analyses: dict[str, AnalysisJob] = {}
+        self.indexes: dict[str, AiIndexJob] = {}
         self._lock = threading.Lock()
+
+    def _llm(self) -> LLMClient:
+        """The configured model client (from WEBATLAS_LLM_* env), built once and reused.
+        When nothing is configured it still returns a client whose .available() is False, so
+        callers degrade to the offline path."""
+        if self.llm_client is not None:
+            return self.llm_client
+        with self._llm_lock:
+            if self.llm_client is None:
+                self.llm_client = LLMClient()
+        return self.llm_client
 
     def _evict_finished(self) -> None:
         finished = [j for j in self.jobs.values() if j.status != "running"]
@@ -318,6 +360,71 @@ class ScanManager:
             if old.thread is None or not old.thread.is_alive():
                 self.analyses.pop(old.id, None)
 
+    # ---------------------------------------------------------------- AI layer
+
+    def build_index(self, scan_id: str) -> AiIndexJob | None:
+        with self._lock:
+            row = self.db.get_scan(scan_id)
+            if row is None:
+                return None
+            if row["status"] == "running":
+                raise RuntimeError("wait for the crawl to finish before building the AI index")
+            if not self.db.has_content(scan_id):
+                raise RuntimeError("analyse the documents first; the AI index is built from their text")
+            existing = self.indexes.get(scan_id)
+            if existing and existing.status == "running":
+                return existing
+            running = sum(1 for a in self.indexes.values() if a.status == "running")
+            if running >= MAX_INDEXES:
+                raise TooManyScans(f"{running} indexing jobs are already running; wait for one to finish")
+            self._evict_finished_indexes()
+            job = AiIndexJob(scan_id)
+            job.indexer = AiIndexer(self.db, scan_id, client=self._llm(),
+                                    max_duration=INDEX_TIME_LIMIT, on_event=job.add_event)
+            self.indexes[scan_id] = job
+        job.thread = threading.Thread(target=self._run_index, args=(job,), daemon=True,
+                                      name=f"index-{scan_id}")
+        job.thread.start()
+        return job
+
+    def _run_index(self, job: AiIndexJob) -> None:
+        try:
+            job.indexer.run()      # synchronous
+            job.status = "done"
+        except Exception as exc:
+            job.status = "error"
+            log.exception("AI indexing of %s failed", job.id)
+            try:
+                self.db.set_status(job.id, ai_status="error",
+                                   ai_error=f"{type(exc).__name__}: {exc}")
+            except Exception:
+                log.exception("could not record AI index failure for %s", job.id)
+
+    def stop_index(self, scan_id: str) -> bool:
+        job = self.indexes.get(scan_id)
+        if not job or job.status != "running":
+            return False
+        job.indexer.request_stop()
+        return True
+
+    def _evict_finished_indexes(self) -> None:
+        done = [a for a in self.indexes.values() if a.status != "running"]
+        done.sort(key=lambda a: a.started_mono, reverse=True)
+        for old in done[KEEP_FINISHED_IN_MEMORY:]:
+            if old.thread is None or not old.thread.is_alive():
+                self.indexes.pop(old.id, None)
+
+    def ask(self, scan_id: str, question: str) -> rag.Answer:
+        question = (question or "")[:MAX_QUESTION_CHARS]
+        return rag.answer(self.db, scan_id, question, client=self._llm())
+
+    def ai_info(self) -> dict:
+        """What the model layer looks like right now — for the console's AI panel."""
+        client = self._llm()
+        info = client.info()
+        info["available"] = client.available()
+        return info
+
     # ---------------------------------------------------------------- reads
 
     def snapshot(self, scan_id: str, cursors: dict[str, int]) -> dict | None:
@@ -372,6 +479,16 @@ class ScanManager:
             "started_at": started_at, "settings": settings, "max_pages": max_pages,
             "resumable": status in ("interrupted", "stopped"),
             "analyzable": status in ("done", "stopped") and analysis["status"] != "running",
+            "ai": {
+                "status": arow["ai_status"] if arow else "none",
+                "indexed": arow["indexed_docs"] if arow else 0,
+                "chunks": arow["chunks"] if arow else 0,
+                "embed_kind": arow["embed_kind"] if arow else "",
+                "error": arow["ai_error"] if arow else "",
+                "running": scan_id in self.indexes and self.indexes[scan_id].status == "running",
+            },
+            # The index is built from analysed text, so it needs analysis to have produced some.
+            "indexable": analysis["analyzed"] > 0 and analysis["status"] != "running",
             "summary": summary, "analysis": analysis,
             "events": events, "events_total": events_total,
             "documents": docs, "pages": pages, "issues": issues, "findings": findings,
@@ -393,6 +510,10 @@ class ScanManager:
         analysis = self.analyses.get(scan_id)
         if analysis and analysis.status == "running":
             raise RuntimeError("stop the analysis before deleting the scan")
+        index = self.indexes.get(scan_id)
+        if index and index.status == "running":
+            raise RuntimeError("stop the AI indexing before deleting the scan")
         self.jobs.pop(scan_id, None)
         self.analyses.pop(scan_id, None)
+        self.indexes.pop(scan_id, None)
         return self.db.delete_scan(scan_id)

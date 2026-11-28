@@ -117,6 +117,8 @@
           <button class="btn btn-primary" id="resumeBtn" type="button" hidden>Resume scan</button>
           <button class="btn btn-primary" id="analyzeBtn" type="button" hidden>Analyze documents</button>
           <button class="btn btn-danger" id="stopAnalyzeBtn" type="button" hidden>Stop analysis</button>
+          <button class="btn btn-primary" id="indexBtn" type="button" hidden>Build AI index</button>
+          <button class="btn btn-danger" id="stopIndexBtn" type="button" hidden>Stop indexing</button>
           <a class="btn btn-secondary" id="exportCsv" download>Export CSV</a>
           <a class="btn btn-secondary" id="exportJson" download>Export JSON</a>
           <button class="btn btn-quiet" id="deleteBtn" type="button">Delete</button>
@@ -164,6 +166,8 @@
               Pages <span class="count" id="countPages">0</span></button>
             <button role="tab" id="tab-findings" aria-controls="panel-findings" aria-selected="false" tabindex="-1">
               Findings <span class="count" id="countFindings">0</span></button>
+            <button role="tab" id="tab-ask" aria-controls="panel-ask" aria-selected="false" tabindex="-1">
+              Ask AI</button>
             <button role="tab" id="tab-issues" aria-controls="panel-issues" aria-selected="false" tabindex="-1">
               Issues <span class="count" id="countIssues">0</span></button>
             <button role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
@@ -216,6 +220,21 @@
               </table>
               <p class="table-empty" id="findingEmpty"></p>
               <button class="btn btn-quiet more" id="findingMore" type="button" hidden>Show more</button>
+            </div>
+          </div>
+
+          <div role="tabpanel" id="panel-ask" aria-labelledby="tab-ask" class="panel" hidden>
+            <div class="ask-status" id="askStatus"></div>
+            <form class="ask-form" id="askForm">
+              <label class="visually-hidden" for="askInput">Ask a question about the documents</label>
+              <input type="text" id="askInput" placeholder="Ask a question about these documents…"
+                     autocomplete="off" maxlength="2000">
+              <button class="btn btn-primary" id="askBtn" type="submit">Ask</button>
+            </form>
+            <div class="ask-answer" id="askAnswer" hidden>
+              <div class="ask-text" id="askText"></div>
+              <h3 class="ask-cite-title" id="askCiteTitle" hidden>Sources</h3>
+              <ol class="ask-citations" id="askCitations"></ol>
             </div>
           </div>
 

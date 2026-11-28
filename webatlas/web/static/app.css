@@ -422,6 +422,32 @@ a.cell-url:hover, a.cell-src:hover { color: var(--sea); text-decoration: underli
 .analysis-note { margin: 0; color: var(--ink-soft); font-size: var(--step--1); }
 .analysis-note.running { color: var(--amber-ink); }
 
+/* ---------------------------------------------------------------- ask AI */
+.ask-status {
+  padding: .75rem; margin: 0; color: var(--ink-soft); font-size: var(--step--1);
+  border-bottom: 1px solid var(--rule); line-height: 1.5;
+}
+.ask-status.running { color: var(--amber-ink); }
+.ask-status.error { color: var(--red); }
+.ask-form { display: flex; gap: .5rem; padding: .75rem; align-items: center; }
+.ask-form input {
+  flex: 1; padding: .5rem .6rem; border: 1px solid var(--rule); border-radius: var(--radius-s);
+  font: inherit; background: var(--sheet); color: var(--ink); min-width: 0;
+}
+.ask-form input:disabled { opacity: .6; }
+.ask-answer { padding: 0 .75rem 1rem; }
+.ask-text { white-space: pre-wrap; line-height: 1.6; margin: .25rem 0 1rem; }
+.ask-cite-title { font-size: var(--step--1); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--ink-soft); margin: 0 0 .5rem; }
+.ask-citations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .75rem; }
+.ask-citations li {
+  padding: .6rem .75rem; background: var(--sheet); border: 1px solid var(--rule);
+  border-radius: var(--radius-s); font-size: var(--step--1);
+}
+.cite-num { font-weight: 700; color: var(--ink-soft); margin-right: .4rem; }
+.cite-score { color: var(--ink-soft); margin-left: .5rem; font-variant-numeric: tabular-nums; }
+.cite-snippet { margin: .4rem 0 0; color: var(--ink-soft); line-height: 1.5; }
+
 .sev-badge {
   display: inline-block; min-width: 4.2rem; padding: .1rem .4rem; border-radius: 3px; text-align: center;
   font-size: .72rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase;

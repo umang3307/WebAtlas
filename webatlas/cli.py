@@ -51,6 +51,8 @@ def crawl(
     unlimited: bool = typer.Option(False, "--unlimited", help="Lift depth, page, time and confirmation limits."),
     out: Path | None = typer.Option(None, "--out", "-o", help="Write full results to this JSON file."),
     analyze: bool = typer.Option(False, "--analyze", help="Download the documents found and flag what they leak."),
+    classify: bool = typer.Option(False, "--classify",
+        help="Label each analysed document with an AI category and summary (needs a model; implies --analyze)."),
     allow_private: bool = typer.Option(False, "--allow-private", help="Allow localhost/private IPs (testing)."),
 ) -> None:
     """Crawl a site and list every document it links to."""
@@ -93,20 +95,25 @@ def crawl(
         raise typer.Exit(code=1) from exc
 
     _print_summary(result)
-    findings = _analyze(result, config) if analyze and result.documents else []
+    analyze = analyze or classify     # classification is built on the analysis pass
+    findings, texts = _analyze(result, config, want_text=classify) if analyze and result.documents else ([], {})
     if analyze:
         _print_findings(findings)
+    classifications = _classify(texts) if classify and texts else []
     if out:
         payload = result.to_dict()
         if analyze:
             payload["findings"] = [f.__dict__ for f in findings]
+        if classifications:
+            payload["classifications"] = classifications
         out.write_text(json.dumps(payload, indent=2))
         console.print(f"\nFull results written to [bold]{out}[/bold]")
 
 
-def _analyze(result, config):
-    """Download each document found and scan it for leaks. Returns a flat list of findings
-    (each tagged with its document url)."""
+def _analyze(result, config, want_text: bool = False):
+    """Download each document found and scan it for leaks. Returns (findings, texts), where each
+    finding is tagged with its document url and texts (when want_text) maps url -> (title, type, text)
+    for a later classification pass, so documents aren't downloaded twice."""
     import asyncio
 
     from webatlas.analysis.extract import MAX_PARSE_BYTES, extract_document
@@ -117,6 +124,7 @@ def _analyze(result, config):
 
     targets = [d for d in result.documents if d.doc_type in ANALYZABLE]
     found: list = []
+    texts: dict = {}
 
     async def go():
         async with Fetcher(config) as fetcher:
@@ -135,9 +143,50 @@ def _analyze(result, config):
                     for f in await asyncio.to_thread(scan_document, extracted):
                         f.url = doc.final_url
                         found.append(f)
+                    if want_text and extracted.text.strip():
+                        title = extracted.metadata.get("title", "") or getattr(doc, "title", "")
+                        texts[doc.final_url] = (title, doc.doc_type, extracted.text)
 
     asyncio.run(go())
-    return found
+    return found, texts
+
+
+def _classify(texts: dict) -> list[dict]:
+    """Label each document with an AI category and summary. Needs a configured model; prints a
+    friendly note and returns [] when none is reachable."""
+    from webatlas.ai.classify import classify_document
+    from webatlas.ai.client import LLMClient
+
+    client = LLMClient()
+    if not client.available():
+        console.print(f"\n[yellow]No model reachable at {client.config.url}[/yellow] — skipping "
+                      "classification. Start Ollama, or set WEBATLAS_LLM_URL. (Leak detection still ran.)")
+        return []
+    rows: list[dict] = []
+    with Progress(TextColumn("[bold cyan]Classifying"), BarColumn(), MofNCompleteColumn(),
+                  console=console, transient=True) as prog:
+        task = prog.add_task("", total=len(texts))
+        for url, (title, doc_type, text) in texts.items():
+            prog.advance(task)
+            category, summary = classify_document(client, title, doc_type, text)
+            if category:
+                rows.append({"url": url, "doc_type": doc_type, "category": category, "summary": summary})
+    _print_classifications(rows)
+    return rows
+
+
+def _print_classifications(rows: list[dict]) -> None:
+    if not rows:
+        console.print("\n[dim]No documents could be classified.[/dim]")
+        return
+    console.print(f"\n[bold]{len(rows)} documents classified[/bold]")
+    table = Table(show_lines=False, header_style="bold")
+    table.add_column("Category", width=14)
+    table.add_column("Document", overflow="fold")
+    table.add_column("Summary", max_width=48, overflow="fold")
+    for r in sorted(rows, key=lambda r: r["category"]):
+        table.add_row(f"[cyan]{r['category']}[/cyan]", r["url"], r["summary"])
+    console.print(table)
 
 
 def _print_findings(findings) -> None:
