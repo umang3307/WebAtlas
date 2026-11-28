@@ -195,8 +195,4 @@ keep it that way when crawling sites you don't own.
 
 v1 was built in August 2026 for [Into the Scrape-Verse](https://www.wemakedevs.org/hackathons/scrape-verse),
 the Bright Data Scraper Studio hackathon, by team **Sunflowers** (Umang Agarwal and Aashvi Pandey). It used
-Bright Data's AI-generated collectors and their heal API. That version is preserved on the `main` branch.
-
-## AI-use disclosure
-
-Built with the assistance of an AI coding assistant (Claude).
+Bright Data's automated collectors and their heal API. That version is preserved on the `main` branch.
