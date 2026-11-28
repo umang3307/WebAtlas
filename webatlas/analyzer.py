@@ -115,7 +115,8 @@ class Analyzer:
         for f in findings:
             rows.append({"scan_id": self.scan_id, "document_id": doc_id, "url": url, "doc_type": doc_type,
                          "rule": f.rule, "severity": f.severity, "title": f.title,
-                         "location": f.location, "detail": f.detail, "count": f.count})
+                         "location": f.location, "detail": f.detail, "count": f.count,
+                         "secret": f.secret})
             self.severity[f.severity] = self.severity.get(f.severity, 0) + 1
         self.findings_count += len(rows)
         if findings:

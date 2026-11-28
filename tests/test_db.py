@@ -6,7 +6,7 @@ import sqlite3
 
 from webatlas.config import CrawlConfig
 from webatlas.crawler import Crawler
-from webatlas.db import Database, DbSink, DocumentRow, IssueRow, PageRow
+from webatlas.db import Database, DbSink, DocumentRow, FindingRow, IssueRow, PageRow
 from webatlas.web import create_app
 
 from .fake_site import FakeSite
@@ -271,3 +271,27 @@ def test_phase2_database_gains_analysis_columns(tmp_path):
     assert scan["findings"] == 0
     assert scan["severity_counts"] == {}
     assert scan["documents"] == 3                  # old data preserved
+
+
+def test_findings_table_gains_secret_column(tmp_path):
+    """A database whose 'findings' table predates the reveal/hide feature must gain the 'secret'
+    column when opened, so existing analyses keep working."""
+    import sqlite3
+    db_path = tmp_path / "old_findings.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE findings (id INTEGER PRIMARY KEY, scan_id TEXT, document_id INTEGER,
+        url TEXT, doc_type TEXT, rule TEXT, severity TEXT, title TEXT, location TEXT, detail TEXT,
+        count INTEGER)""")   # note: no 'secret' column
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)   # should ALTER TABLE findings ADD COLUMN secret
+    db.create_scan("s", "http://x/", [], {}, "2026-11-01T00:00:00+00:00")
+    db.add_findings([{"scan_id": "s", "document_id": 1, "url": "http://x/f.pdf", "doc_type": "pdf",
+                      "rule": "aws-access-key", "severity": "critical", "title": "AWS key",
+                      "location": "text", "detail": "AKI***EF", "secret": "AKIAFULLVALUE123456",
+                      "count": 1}])
+    row = db.rows_after(FindingRow, "s", 0)[0]
+    assert row["detail"] == "AKI***EF"
+    assert row["secret"] == "AKIAFULLVALUE123456"   # full value round-trips for reveal

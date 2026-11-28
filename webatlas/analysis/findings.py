@@ -27,8 +27,11 @@ class Finding:
     severity: str
     title: str
     location: str      # "text", "metadata", or "metadata:<field>"
-    detail: str
+    detail: str        # always safe to display: secrets appear masked here
     count: int = 1
+    secret: str = ""   # the full, unmasked value for secret findings; "" for everything else.
+                       # Stored so the console can offer reveal/hide — masking is the default
+                       # display, not a wall; the user decides whether to see the raw value.
 
     def sort_key(self) -> tuple[int, int]:
         return (_SEV_RANK.get(self.severity, 99), -self.count)
@@ -136,17 +139,17 @@ def _metadata_findings(meta: dict[str, str]) -> list[Finding]:
 def _content_findings(text: str) -> list[Finding]:
     bucket: dict[tuple[str, str], Finding] = {}
 
-    def add(rule: str, severity: str, title: str, detail: str, dedup: str) -> None:
+    def add(rule: str, severity: str, title: str, detail: str, dedup: str, secret: str = "") -> None:
         key = (rule, dedup)
         if key in bucket:
             bucket[key].count += 1
         elif len(bucket) < MAX_FINDINGS_PER_DOC:
-            bucket[key] = Finding(rule, severity, title, "text", detail)
+            bucket[key] = Finding(rule, severity, title, "text", detail, secret=secret)
 
     for spec in _SECRETS:
         for m in spec.pattern.finditer(text):
             value = m.group(0)
-            add(spec.rule, spec.severity, spec.title, _mask(value), value)
+            add(spec.rule, spec.severity, spec.title, _mask(value), value, secret=value)
 
     for m in _GENERIC_SECRET.finditer(text):
         name, value = m.group(1), m.group(2)
@@ -154,7 +157,7 @@ def _content_findings(text: str) -> list[Finding]:
                 or _entropy(value) < 2.0 or len(set(value)) < 4):
             continue   # looks like a placeholder or a dictionary word, not a real secret
         add("possible-secret", "medium", f"Possible hard-coded secret ({name.lower()})",
-            f"{name} = {_mask(value)}", value)
+            f"{name} = {_mask(value)}", value, secret=f"{name} = {value}")
 
     for m in _EMAIL.finditer(text):
         email = m.group(0)
