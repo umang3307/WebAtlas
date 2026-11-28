@@ -73,6 +73,12 @@ class Scan(Base):
     sitemap_urls: Mapped[int] = mapped_column(Integer, default=0)
     sitemap_done: Mapped[bool] = mapped_column(Boolean, default=False)
     doc_types: Mapped[str] = mapped_column(Text, default="{}")    # JSON {type: count}
+    # Document analysis (Phase 3), run separately from the crawl.
+    analysis_status: Mapped[str] = mapped_column(String(16), default="none")  # none|running|done|stopped|error
+    analysis_error: Mapped[str] = mapped_column(Text, default="")
+    analyzed_docs: Mapped[int] = mapped_column(Integer, default=0)
+    findings: Mapped[int] = mapped_column(Integer, default=0)
+    severity_counts: Mapped[str] = mapped_column(Text, default="{}")   # JSON {severity: count}
 
 
 class PageRow(Base):
@@ -115,6 +121,23 @@ class IssueRow(Base):
     reason: Mapped[str] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(16))                 # failure | robots | trap
     __table_args__ = (Index("ix_issues_scan", "scan_id", "id"),)
+
+
+class FindingRow(Base):
+    __tablename__ = "findings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
+    document_id: Mapped[int] = mapped_column(Integer)      # DocumentRow.id this came from
+    url: Mapped[str] = mapped_column(Text)                 # document's final_url
+    doc_type: Mapped[str] = mapped_column(String(32), default="")
+    rule: Mapped[str] = mapped_column(String(48))
+    severity: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(Text)
+    location: Mapped[str] = mapped_column(String(48), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (Index("ix_findings_scan", "scan_id", "id"),
+                      Index("ix_findings_sev", "scan_id", "severity"))
 
 
 class FrontierRow(Base):
@@ -175,7 +198,8 @@ class Database:
             with self.engine.begin() as conn:
                 legacy_rows = [dict(r._mapping) for r in conn.execute(text("SELECT * FROM scans"))]
                 conn.execute(text("ALTER TABLE scans RENAME TO scans_v1_backup"))
-        Base.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)   # creates any missing tables (not missing columns)
+        self._add_missing_columns()
         with self.engine.begin() as conn:
             conn.execute(insert(Meta).prefix_with("OR REPLACE"),
                          {"key": "schema_version", "value": str(SCHEMA_VERSION)})
@@ -186,6 +210,25 @@ class Database:
         if legacy:
             with self.engine.begin() as conn:
                 conn.execute(text("DROP TABLE scans_v1_backup"))
+
+    def _add_missing_columns(self) -> None:
+        """create_all never alters an existing table, so a database made by an earlier WebAtlas
+        version is missing columns added since (e.g. the Phase 3 analysis columns). Add them."""
+        insp = inspect(self.engine)
+        if "scans" not in insp.get_table_names():
+            return
+        have = {c["name"] for c in insp.get_columns("scans")}
+        for col in Scan.__table__.columns:
+            if col.name in have:
+                continue
+            default = col.default.arg if col.default is not None else None
+            coltype = col.type.compile(self.engine.dialect)
+            ddl = f'ALTER TABLE scans ADD COLUMN "{col.name}" {coltype}'
+            if default is not None:
+                literal = f"'{default}'" if isinstance(default, str) else default
+                ddl += f" DEFAULT {literal}"
+            with self.engine.begin() as conn:
+                conn.execute(text(ddl))
 
     def _import_legacy(self, row: dict) -> None:
         settings = json.loads(row.get("settings") or "{}")
@@ -263,6 +306,27 @@ class Database:
             yield from rows
             last = rows[-1]["id"]
 
+    def add_findings(self, rows: list[dict]) -> None:
+        if rows:
+            with self.engine.begin() as conn:
+                conn.execute(insert(FindingRow), rows)
+
+    def severity_counts(self, scan_id: str) -> dict[str, int]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(FindingRow.severity, func.sum(FindingRow.count))
+                                .where(FindingRow.scan_id == scan_id).group_by(FindingRow.severity)).all()
+        return {sev: int(n) for sev, n in rows}
+
+    def documents_for_analysis(self, scan_id: str):
+        """(id, final_url, doc_type) for every document of a scan, oldest first."""
+        with self.engine.connect() as conn:
+            yield from conn.execute(select(DocumentRow.id, DocumentRow.final_url, DocumentRow.doc_type)
+                                    .where(DocumentRow.scan_id == scan_id).order_by(DocumentRow.id))
+
+    def clear_findings(self, scan_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(FindingRow).where(FindingRow.scan_id == scan_id))
+
     def count(self, model, scan_id: str) -> int:
         with self.engine.connect() as conn:
             return conn.execute(select(func.count()).select_from(model).where(model.scan_id == scan_id)).scalar()
@@ -311,6 +375,7 @@ def _scan_dict(row) -> dict:
     d["seeds"] = json.loads(d["seeds"] or "[]")
     d["settings"] = json.loads(d["settings"] or "{}")
     d["doc_types"] = json.loads(d["doc_types"] or "{}")
+    d["severity_counts"] = json.loads(d.get("severity_counts") or "{}")
     return d
 
 
